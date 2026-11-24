@@ -1,3 +1,4 @@
+from datetime import datetime
 import json
 import unittest
 
@@ -7,6 +8,8 @@ from backend.composer import (
     filter_set_boxes,
     join_prompt_boxes_text,
     merge_loras,
+    resolve_batch_datetime,
+    resolve_filename_prefix,
 )
 
 
@@ -113,7 +116,8 @@ class TestComposer(unittest.TestCase):
             ],
         }
 
-        jobs = build_batch_jobs(payload, use_anima_tools=True, seed_fn=lambda: next(seeds))
+        fixed_now = datetime(2026, 11, 24, 23, 30, 5)
+        jobs = build_batch_jobs(payload, use_anima_tools=True, seed_fn=lambda: next(seeds), now=fixed_now)
         self.assertEqual(len(jobs), 3)
         self.assertEqual([j["seed"] for j in jobs], [101, 102, 201])
         self.assertEqual(jobs[0]["set_name"], "夏服/テスト")
@@ -126,17 +130,73 @@ class TestComposer(unittest.TestCase):
         parsed_boxes = json.loads(p0["6"]["inputs"]["prompt_boxes"])
         self.assertEqual([b["label"] for b in parsed_boxes], ["キャラ", "衣装"])
         self.assertEqual(parsed_boxes[1]["random"], ["pose"])
-        self.assertEqual(p0["11"]["inputs"]["filename_prefix"], "%date:yyyyMMdd%/夏服_テスト")
+        self.assertEqual(p0["11"]["inputs"]["filename_prefix"], "20261124/夏服_テスト")
 
         # Fallback mode (without Comfyui-Anima-Tools)
         fallback_seeds = iter([301, 302, 401])
-        fb_jobs = build_batch_jobs(payload, use_anima_tools=False, seed_fn=lambda: next(fallback_seeds))
+        fb_jobs = build_batch_jobs(payload, use_anima_tools=False, seed_fn=lambda: next(fallback_seeds), now=fixed_now)
         fb_p0 = fb_jobs[0]["prompt"]
         self.assertEqual(fb_p0["4_0"]["class_type"], "LoraLoaderModelOnly")
         self.assertEqual(fb_p0["4_1"]["class_type"], "LoraLoaderModelOnly")
         self.assertEqual(fb_p0["5"]["inputs"]["model"], ["4_1", 0])
         self.assertEqual(fb_p0["6"]["class_type"], "CLIPTextEncode")
         self.assertEqual(fb_p0["6"]["inputs"]["text"], "girl_a, 1girl, summer dress, ")
+
+    def test_filename_prefix_date_and_time_expansion(self):
+        dt = datetime(2026, 11, 24, 9, 5, 7)
+        self.assertEqual(
+            resolve_filename_prefix("%date:yyyyMMdd%/%date:yyyyMMdd%", "制服", now=dt),
+            "20261124/20261124",
+        )
+        self.assertEqual(
+            resolve_filename_prefix("%date:yyyy-MM-dd_HH-mm-ss%/{set_name}", "制服/春", now=dt),
+            "2026-11-24_09-05-07/制服_春",
+        )
+        self.assertEqual(
+            resolve_filename_prefix("%date%/%time:hhmmss%", "制服", now=dt),
+            "2026-11-24/090507",
+        )
+        # Timezone offset resolves without raising and honors offset sign
+        jst_dt = resolve_batch_datetime(540)
+        self.assertEqual(jst_dt.utcoffset().total_seconds(), 540 * 60)
+
+    def test_seed_modes_fixed_increment_decrement_and_randomize(self):
+        base_payload = {
+            "common_prompt_boxes": [{"id": "c1", "label": "品質", "text": "masterpiece,", "disabled": False}],
+            "selected_sets": [
+                {
+                    "instance_id": "i1",
+                    "name": "セットA",
+                    "enabled": True,
+                    "images_count": 2,
+                    "prompt_boxes": [{"id": "p1", "label": "衣装", "text": "dress,", "disabled": False}],
+                },
+                {
+                    "instance_id": "i2",
+                    "name": "セットB",
+                    "enabled": True,
+                    "images_count": 1,
+                    "prompt_boxes": [{"id": "p2", "label": "衣装", "text": "uniform,", "disabled": False}],
+                },
+            ],
+        }
+
+        fixed_jobs = build_batch_jobs({**base_payload, "settings": {"seed_mode": "fixed", "seed": 1234567890123}})
+        self.assertEqual([j["seed"] for j in fixed_jobs], [1234567890123, 1234567890123, 1234567890123])
+        self.assertEqual(fixed_jobs[0]["prompt"]["9"]["inputs"]["seed"], 1234567890123)
+
+        inc_jobs = build_batch_jobs({**base_payload, "settings": {"seed_mode": "increment", "seed": 500}})
+        self.assertEqual([j["seed"] for j in inc_jobs], [500, 501, 502])
+
+        dec_jobs = build_batch_jobs({**base_payload, "settings": {"seed_mode": "decrement", "seed": 500}})
+        self.assertEqual([j["seed"] for j in dec_jobs], [500, 499, 498])
+
+        rand_seeds = iter([11, 22, 33])
+        rand_jobs = build_batch_jobs(
+            {**base_payload, "settings": {"seed_mode": "randomize", "seed": 500}},
+            seed_fn=lambda: next(rand_seeds),
+        )
+        self.assertEqual([j["seed"] for j in rand_jobs], [11, 22, 33])
 
     def test_empty_selection_raises(self):
         with self.assertRaises(ValueError):

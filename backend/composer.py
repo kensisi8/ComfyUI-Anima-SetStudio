@@ -6,6 +6,7 @@ import copy
 import json
 import re
 import secrets
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 from .storage import (
@@ -15,6 +16,8 @@ from .storage import (
 )
 
 MAX_SEED = 2**53 - 1
+DATE_TIME_PLACEHOLDER_RE = re.compile(r"%(date|time)(?::([^%]+))?%")
+DATE_TOKEN_RE = re.compile(r"yyyy|yy|MM|M|dd|d|HH|hh|H|h|mm|m|ss|s")
 
 
 def normalize_category(label: Any) -> str:
@@ -129,15 +132,88 @@ def sanitize_filename_segment(name: str) -> str:
     return cleaned[:64] or "set"
 
 
-def resolve_filename_prefix(template: str, set_name: str) -> str:
+def resolve_batch_datetime(tz_offset_minutes: Any = None, now: datetime | None = None) -> datetime:
+    """Resolve current datetime in caller's timezone (handles Colab UTC vs browser JST)."""
+    if now is not None:
+        return now
+    if tz_offset_minutes is not None:
+        try:
+            offset = max(-840, min(840, int(tz_offset_minutes)))
+            return datetime.now(timezone(timedelta(minutes=offset)))
+        except (TypeError, ValueError):
+            pass
+    return datetime.now().astimezone()
+
+
+def format_comfy_date_token(kind: str, fmt: str | None, dt: datetime) -> str:
+    """Expand ComfyUI frontend %date:...% / %time:...% placeholders."""
+    default_fmt = "HH-mm-ss" if kind == "time" else "yyyy-MM-dd"
+    pattern = (fmt or default_fmt).strip() or default_fmt
+
+    def _replace(match: re.Match[str]) -> str:
+        tok = match.group(0)
+        if tok == "yyyy":
+            return f"{dt.year:04d}"
+        if tok == "yy":
+            return f"{dt.year % 100:02d}"
+        if tok == "MM":
+            return f"{dt.month:02d}"
+        if tok == "M":
+            return str(dt.month)
+        if tok == "dd":
+            return f"{dt.day:02d}"
+        if tok == "d":
+            return str(dt.day)
+        if tok in ("HH", "hh"):
+            return f"{dt.hour:02d}"
+        if tok in ("H", "h"):
+            return str(dt.hour)
+        if tok == "mm":
+            return f"{dt.minute:02d}"
+        if tok == "m":
+            return str(dt.minute)
+        if tok == "ss":
+            return f"{dt.second:02d}"
+        if tok == "s":
+            return str(dt.second)
+        return tok
+
+    formatted = DATE_TOKEN_RE.sub(_replace, pattern)
+    return re.sub(r'[<>:"\\|?*\x00-\x1f]+', "_", formatted)
+
+
+def resolve_filename_prefix(template: str, set_name: str, *, now: datetime | None = None) -> str:
     prefix = str(template or "%date:yyyyMMdd%/%date:yyyyMMdd%").strip() or "%date:yyyyMMdd%/%date:yyyyMMdd%"
+    dt = resolve_batch_datetime(now=now)
+    prefix = DATE_TIME_PLACEHOLDER_RE.sub(
+        lambda m: format_comfy_date_token(m.group(1), m.group(2), dt),
+        prefix,
+    )
     if "{set_name}" in prefix:
         prefix = prefix.replace("{set_name}", sanitize_filename_segment(set_name))
-    return prefix
+    return prefix.lstrip("/\\") or "anima"
 
 
 def default_seed() -> int:
     return secrets.randbelow(MAX_SEED) + 1
+
+
+def resolve_job_seed(
+    *,
+    seed_mode: str,
+    base_seed: int,
+    job_index: int,
+    seed_fn: Callable[[], int] | None = None,
+) -> int:
+    """Resolve the seed for a single queued image according to seed_mode."""
+    mode = str(seed_mode or "randomize").strip().lower()
+    if mode == "fixed":
+        return max(0, min(MAX_SEED, int(base_seed)))
+    if mode == "increment":
+        return (max(0, int(base_seed)) + int(job_index)) % (MAX_SEED + 1)
+    if mode == "decrement":
+        return (max(0, int(base_seed)) - int(job_index)) % (MAX_SEED + 1)
+    return int((seed_fn or default_seed)())
 
 
 def build_single_workflow_prompt(
@@ -150,6 +226,7 @@ def build_single_workflow_prompt(
     separator: str = ", ",
     set_name: str = "",
     use_anima_tools: bool = True,
+    now: datetime | None = None,
 ) -> dict[str, Any]:
     """Build a ComfyUI /prompt API workflow dictionary for a single generation."""
     cfg = normalize_settings(settings)
@@ -273,7 +350,7 @@ def build_single_workflow_prompt(
         "class_type": "SaveImage",
         "inputs": {
             "images": ["10", 0],
-            "filename_prefix": resolve_filename_prefix(cfg["filename_prefix"], set_name),
+            "filename_prefix": resolve_filename_prefix(cfg["filename_prefix"], set_name, now=now),
         },
     }
 
@@ -285,6 +362,7 @@ def build_batch_jobs(
     *,
     use_anima_tools: bool = True,
     seed_fn: Callable[[], int] | None = None,
+    now: datetime | None = None,
 ) -> list[dict[str, Any]]:
     """Build ordered ComfyUI queue jobs for all enabled selected sets."""
     if not isinstance(payload, dict):
@@ -304,6 +382,7 @@ def build_batch_jobs(
     if not isinstance(selected_sets, list):
         raise ValueError("selected_sets must be a list")
 
+    batch_dt = resolve_batch_datetime(payload.get("tz_offset_minutes"), now=now)
     next_seed = seed_fn or default_seed
     jobs: list[dict[str, Any]] = []
 
@@ -332,7 +411,12 @@ def build_batch_jobs(
         positive_preview = join_prompt_boxes_text(combined_boxes, separator)
 
         for img_idx in range(images_count):
-            seed = int(next_seed())
+            seed = resolve_job_seed(
+                seed_mode=settings["seed_mode"],
+                base_seed=settings["seed"],
+                job_index=len(jobs),
+                seed_fn=next_seed,
+            )
             workflow_prompt = build_single_workflow_prompt(
                 combined_boxes=combined_boxes,
                 merged_loras=merged_loras,
@@ -342,6 +426,7 @@ def build_batch_jobs(
                 separator=separator,
                 set_name=set_name,
                 use_anima_tools=use_anima_tools,
+                now=batch_dt,
             )
             jobs.append(
                 {

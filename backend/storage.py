@@ -18,6 +18,8 @@ MAX_THUMB_DIMENSION = 320
 DEFAULT_THUMB_WEBP_QUALITY = 75
 DEFAULT_THUMB_JPEG_QUALITY = 78
 MAX_THUMB_UPLOAD_BYTES = 20 * 1024 * 1024  # Raw upload ceiling before downscale
+MAX_SEED_VALUE = 2**53 - 1
+VALID_SEED_MODES = ("randomize", "fixed", "increment", "decrement")
 
 LORA_OPTIONAL_STR_KEYS = (
     "display_name",
@@ -43,6 +45,8 @@ DEFAULT_GENERATION_SETTINGS: dict[str, Any] = {
     "sampler_name": "er_sde",
     "scheduler": "simple",
     "denoise": 1.0,
+    "seed_mode": "randomize",
+    "seed": 0,
     "width": 832,
     "height": 1216,
     "images_per_set": 1,
@@ -289,10 +293,21 @@ def normalize_settings(raw: Any) -> dict[str, Any]:
 
     def _to_int(val: Any, default: int, min_v: int, max_v: int) -> int:
         try:
-            num = int(round(float(val)))
+            if isinstance(val, bool):
+                return default
+            if isinstance(val, int):
+                num = val
+            else:
+                s = str(val).strip()
+                num = int(s) if re.fullmatch(r"[+-]?\d+", s) else int(round(float(s)))
             return max(min_v, min(max_v, num))
         except (TypeError, ValueError):
             return default
+
+    raw_seed_mode = str(data.get("seed_mode") or "").strip().lower()
+    if raw_seed_mode in VALID_SEED_MODES:
+        merged["seed_mode"] = raw_seed_mode
+    merged["seed"] = _to_int(data.get("seed"), DEFAULT_GENERATION_SETTINGS["seed"], 0, MAX_SEED_VALUE)
 
     merged["shift"] = _to_float(data.get("shift"), DEFAULT_GENERATION_SETTINGS["shift"], 0.0, 100.0)
     merged["steps"] = _to_int(data.get("steps"), DEFAULT_GENERATION_SETTINGS["steps"], 1, 200)

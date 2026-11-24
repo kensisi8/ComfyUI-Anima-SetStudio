@@ -735,6 +735,7 @@ export class AnimaSetStudioModal {
                 excluded_categories: this.state.excluded_categories,
                 settings: this.state.settings,
                 selected_sets: this.state.selected_sets,
+                tz_offset_minutes: -new Date().getTimezoneOffset(),
             });
 
             const jobs = built.jobs || [];

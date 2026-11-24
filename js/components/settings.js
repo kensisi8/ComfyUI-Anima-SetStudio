@@ -7,6 +7,31 @@ const RESOLUTION_PRESETS = [
     { label: "高速ラフ 640×960", w: 640, h: 960 },
 ];
 
+const SEED_MODE_OPTIONS = [
+    { value: "randomize", label: "ランダム（1枚ごと自動）", hint: "(ランダム時は自動発行)" },
+    { value: "fixed", label: "固定（指定シードを全画像で使用）", hint: "(全画像で固定)" },
+    { value: "increment", label: "連番（+1 ずつ増加）", hint: "(開始値・+1ずつ)" },
+    { value: "decrement", label: "連番（-1 ずつ減少）", hint: "(開始値・-1ずつ)" },
+];
+
+const MAX_SAFE_SEED = 9007199254740991;
+
+function rollRandomSeed() {
+    if (window.crypto?.getRandomValues) {
+        const buf = new Uint32Array(2);
+        window.crypto.getRandomValues(buf);
+        const hi = buf[0] & 0x1fffff; // 21 bits
+        const lo = buf[1]; // 32 bits -> 53 bits total
+        const val = hi * 4294967296 + lo;
+        return val > 0 ? val : 1;
+    }
+    return Math.floor(Math.random() * MAX_SAFE_SEED) + 1;
+}
+
+function getSeedHint(mode) {
+    return SEED_MODE_OPTIONS.find((opt) => opt.value === mode)?.hint || "(ランダム時は自動発行)";
+}
+
 function escapeHtml(value) {
     return String(value ?? "").replace(/[&<>"']/g, (ch) => ({
         "&": "&amp;",
@@ -127,7 +152,22 @@ export function renderGenerationSettings(container, options) {
                         <input type="number" class="ass-input" data-key="denoise" step="0.05" min="0" max="1" value="${escapeHtml(cur.denoise)}" />
                     </div>
                     <div class="ass-field">
-                        <label class="ass-label">保存ファイル名プレフィックス <span class="ass-hint-inline">({set_name} 可)</span></label>
+                        <label class="ass-label">シード制御モード</label>
+                        <select class="ass-select" data-key="seed_mode">
+                            ${SEED_MODE_OPTIONS.map(
+                                (opt) => `<option value="${opt.value}" ${(cur.seed_mode || "randomize") === opt.value ? "selected" : ""}>${escapeHtml(opt.label)}</option>`,
+                            ).join("")}
+                        </select>
+                    </div>
+                    <div class="ass-field">
+                        <label class="ass-label">シード値 <span class="ass-hint-inline" data-seed-hint>${escapeHtml(getSeedHint(cur.seed_mode || "randomize"))}</span></label>
+                        <div class="ass-inline-row">
+                            <input type="number" class="ass-input ass-grow" data-key="seed" step="1" min="0" max="${MAX_SAFE_SEED}" value="${escapeHtml(cur.seed ?? 0)}" />
+                            <button type="button" class="ass-btn-xs" data-roll-seed title="ランダムなシード値を入力欄へセット">🎲</button>
+                        </div>
+                    </div>
+                    <div class="ass-field">
+                        <label class="ass-label">保存ファイル名プレフィックス <span class="ass-hint-inline">(%date:yyyyMMdd%, {set_name} 可)</span></label>
                         <input type="text" class="ass-input" data-key="filename_prefix" value="${escapeHtml(cur.filename_prefix)}" />
                     </div>
                 </div>
@@ -140,22 +180,34 @@ export function renderGenerationSettings(container, options) {
     negEl.addEventListener("input", () => onNegativeChange(negEl.value));
     negEl.addEventListener("keydown", (e) => e.stopPropagation());
 
+    const seedInput = container.querySelector('[data-key="seed"]');
+    const seedModeSelect = container.querySelector('[data-key="seed_mode"]');
+    const seedHintEl = container.querySelector("[data-seed-hint]");
+
+    const syncSeedUi = () => {
+        const mode = cur.seed_mode || "randomize";
+        if (seedHintEl) seedHintEl.textContent = getSeedHint(mode);
+        if (seedInput) seedInput.style.opacity = mode === "randomize" ? "0.65" : "1";
+    };
+    syncSeedUi();
+
     const updateKey = (key, rawVal, isFloat = false, isInt = false) => {
         let val = rawVal;
         if (isInt) {
             const parsed = parseInt(rawVal, 10);
             if (!Number.isFinite(parsed)) return;
-            val = parsed;
+            val = key === "seed" ? Math.max(0, Math.min(MAX_SAFE_SEED, parsed)) : parsed;
         } else if (isFloat) {
             const parsed = parseFloat(rawVal);
             if (!Number.isFinite(parsed)) return;
             val = parsed;
         }
         cur[key] = val;
+        if (key === "seed_mode") syncSeedUi();
         onSettingsChange({ ...cur });
     };
 
-    const intKeys = new Set(["width", "height", "steps", "images_per_set"]);
+    const intKeys = new Set(["width", "height", "steps", "images_per_set", "seed"]);
     const floatKeys = new Set(["shift", "cfg", "denoise"]);
 
     container.querySelectorAll("[data-key]").forEach((el) => {
@@ -167,6 +219,18 @@ export function renderGenerationSettings(container, options) {
             el.addEventListener("keydown", (e) => e.stopPropagation());
         }
     });
+
+    const rollSeedBtn = container.querySelector("[data-roll-seed]");
+    if (rollSeedBtn && seedInput) {
+        rollSeedBtn.onclick = () => {
+            const rolled = rollRandomSeed();
+            seedInput.value = String(rolled);
+            cur.seed = rolled;
+            // If user explicitly rolls a seed while in randomize mode, keep their mode choice
+            // and let them see the fresh value immediately.
+            onSettingsChange({ ...cur });
+        };
+    }
 
     const widthInput = container.querySelector('[data-key="width"]');
     const heightInput = container.querySelector('[data-key="height"]');

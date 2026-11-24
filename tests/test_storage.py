@@ -89,7 +89,15 @@ class TestSetStorage(unittest.TestCase):
                 ],
                 "negative_prompt": "low quality",
                 "excluded_categories": ["キャラ", " キャラ ", "品質"],
-                "settings": {"width": 1024, "height": 1440, "steps": 28, "cfg": 4.5, "images_per_set": 3},
+                "settings": {
+                    "width": 1024,
+                    "height": 1440,
+                    "steps": 28,
+                    "cfg": 4.5,
+                    "images_per_set": 3,
+                    "seed_mode": "increment",
+                    "seed": 9007199254740001,
+                },
                 "selected_sets": [
                     {
                         "instance_id": "inst_1",
@@ -105,6 +113,8 @@ class TestSetStorage(unittest.TestCase):
         self.assertEqual(saved["excluded_categories"], ["キャラ", "品質"])
         self.assertEqual(saved["settings"]["width"], 1024)
         self.assertEqual(saved["settings"]["images_per_set"], 3)
+        self.assertEqual(saved["settings"]["seed_mode"], "increment")
+        self.assertEqual(saved["settings"]["seed"], 9007199254740001)
         self.assertEqual(saved["selected_sets"][0]["images_count"], 5)
 
         reloaded = self.storage.get_state()
