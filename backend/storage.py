@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import io
 import json
 import os
 import re
@@ -12,6 +13,11 @@ from datetime import datetime, timezone
 from typing import Any
 
 SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
+SAFE_THUMB_FILENAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,80}\.(?:webp|jpg|jpeg)$")
+MAX_THUMB_DIMENSION = 320
+DEFAULT_THUMB_WEBP_QUALITY = 75
+DEFAULT_THUMB_JPEG_QUALITY = 78
+MAX_THUMB_UPLOAD_BYTES = 20 * 1024 * 1024  # Raw upload ceiling before downscale
 
 LORA_OPTIONAL_STR_KEYS = (
     "display_name",
@@ -59,6 +65,100 @@ def validate_id(raw_id: Any) -> str:
     if not SAFE_ID_RE.match(value):
         raise ValueError(f"Invalid set ID: {raw_id!r}")
     return value
+
+
+def sanitize_thumbnail_name(raw_name: Any) -> str:
+    value = str(raw_name or "").strip()
+    if not value:
+        return ""
+    if not SAFE_THUMB_FILENAME_RE.match(value):
+        return ""
+    return value
+
+
+def validate_thumbnail_name(raw_name: Any) -> str:
+    value = sanitize_thumbnail_name(raw_name)
+    if not value:
+        raise ValueError(f"Invalid thumbnail filename: {raw_name!r}")
+    return value
+
+
+def _detect_lightweight_image_ext(raw_bytes: bytes) -> str | None:
+    if len(raw_bytes) >= 12 and raw_bytes[:4] == b"RIFF" and raw_bytes[8:12] == b"WEBP":
+        return "webp"
+    if raw_bytes.startswith(b"\xff\xd8\xff"):
+        return "jpg"
+    return None
+
+
+def optimize_thumbnail_bytes(
+    raw_bytes: bytes,
+    *,
+    max_dimension: int = MAX_THUMB_DIMENSION,
+    webp_quality: int = DEFAULT_THUMB_WEBP_QUALITY,
+) -> tuple[bytes, str, int, int]:
+    """Downscale and compress thumbnail bytes into lightweight WebP (or JPEG fallback).
+
+    Uses Pillow when available (always installed in ComfyUI) to guarantee
+    server-side resizing & WebP conversion, and falls back gracefully to
+    validating client-optimized WebP/JPEG bytes when Pillow is absent.
+    Returns (encoded_bytes, ext, width, height).
+    """
+    if not raw_bytes:
+        raise ValueError("サムネイル画像データが空です")
+    if len(raw_bytes) > MAX_THUMB_UPLOAD_BYTES:
+        raise ValueError("画像サイズが大きすぎます（上限 20MB）")
+
+    try:
+        from PIL import Image, ImageOps  # type: ignore
+    except Exception:
+        ext = _detect_lightweight_image_ext(raw_bytes)
+        if ext is None:
+            raise ValueError("WebP または JPEG 形式の軽量サムネイル画像をアップロードしてください")
+        return raw_bytes, ext, 0, 0
+
+    try:
+        with Image.open(io.BytesIO(raw_bytes)) as img:
+            img = ImageOps.exif_transpose(img)
+            src_w, src_h = img.size
+            if src_w <= 0 or src_h <= 0:
+                raise ValueError("画像の解像度が不正です")
+
+            # Keep aspect ratio while bounding longest edge to max_dimension
+            if max(src_w, src_h) > max_dimension:
+                resampling = getattr(getattr(Image, "Resampling", Image), "LANCZOS", Image.BICUBIC)
+                img.thumbnail((max_dimension, max_dimension), resampling)
+            out_w, out_h = img.size
+
+            # Flatten transparency onto a dark neutral backdrop so lossy WebP/JPEG stays tiny
+            if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
+                rgba = img.convert("RGBA")
+                bg = Image.new("RGB", rgba.size, (26, 29, 36))
+                bg.paste(rgba, mask=rgba.split()[-1])
+                img = bg
+            elif img.mode != "RGB":
+                img = img.convert("RGB")
+
+            # Prefer WebP (smallest file size); fallback to JPEG if Pillow lacks WebP codec
+            try:
+                buf = io.BytesIO()
+                img.save(buf, format="WEBP", quality=webp_quality, method=6)
+                out_bytes = buf.getvalue()
+                # If still relatively heavy, tighten quality slightly
+                if len(out_bytes) > 45 * 1024 and webp_quality > 60:
+                    buf2 = io.BytesIO()
+                    img.save(buf2, format="WEBP", quality=60, method=6)
+                    if len(buf2.getvalue()) < len(out_bytes):
+                        out_bytes = buf2.getvalue()
+                return out_bytes, "webp", out_w, out_h
+            except Exception:
+                buf = io.BytesIO()
+                img.save(buf, format="JPEG", quality=DEFAULT_THUMB_JPEG_QUALITY, optimize=True)
+                return buf.getvalue(), "jpg", out_w, out_h
+    except ValueError:
+        raise
+    except Exception as exc:
+        raise ValueError("サムネイル画像を読み込めませんでした（PNG / WebP / JPEG を指定してください）") from exc
 
 
 def normalize_lora_entry(value: Any) -> dict[str, Any] | None:
@@ -270,8 +370,10 @@ class SetStorage:
     def __init__(self, base_dir: str | None = None) -> None:
         self.base_dir = os.path.abspath(base_dir or resolve_default_base_dir())
         self.sets_dir = os.path.join(self.base_dir, "sets")
+        self.thumbs_dir = os.path.join(self.base_dir, "thumbnails")
         self.state_path = os.path.join(self.base_dir, "state.json")
         os.makedirs(self.sets_dir, exist_ok=True)
+        os.makedirs(self.thumbs_dir, exist_ok=True)
 
     def _set_file_path(self, set_id: str) -> str:
         safe_id = validate_id(set_id)
@@ -280,6 +382,69 @@ class SetStorage:
         if os.path.commonpath([sets_real, target]) != sets_real:
             raise ValueError("Path traversal detected")
         return target
+
+    def _thumbnail_file_path(self, filename: str) -> str:
+        safe_name = validate_thumbnail_name(filename)
+        thumbs_real = os.path.realpath(self.thumbs_dir)
+        target = os.path.realpath(os.path.join(thumbs_real, safe_name))
+        if os.path.commonpath([thumbs_real, target]) != thumbs_real:
+            raise ValueError("Path traversal detected")
+        return target
+
+    def save_thumbnail(self, raw_bytes: bytes) -> dict[str, Any]:
+        """Optimize and atomically store a lightweight set thumbnail."""
+        os.makedirs(self.thumbs_dir, exist_ok=True)
+        encoded, ext, width, height = optimize_thumbnail_bytes(raw_bytes)
+        filename = f"{generate_id('thumb')}.{ext}"
+        target = self._thumbnail_file_path(filename)
+        fd, tmp_path = tempfile.mkstemp(prefix=".tmp_", suffix=f".{ext}", dir=self.thumbs_dir)
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(encoded)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, target)
+        except Exception:
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except OSError:
+                pass
+            raise
+        return {
+            "thumbnail": filename,
+            "format": ext,
+            "size_bytes": len(encoded),
+            "width": width,
+            "height": height,
+        }
+
+    def get_thumbnail_path(self, filename: str) -> str | None:
+        path = self._thumbnail_file_path(filename)
+        return path if os.path.isfile(path) else None
+
+    def _is_thumbnail_referenced(self, filename: str, *, ignore_set_id: str = "") -> bool:
+        if not filename:
+            return False
+        for item in self.list_sets():
+            if ignore_set_id and item.get("id") == ignore_set_id:
+                continue
+            if item.get("thumbnail") == filename:
+                return True
+        return False
+
+    def _cleanup_unused_thumbnail(self, filename: str, *, ignore_set_id: str = "") -> None:
+        safe = sanitize_thumbnail_name(filename)
+        if not safe:
+            return
+        if self._is_thumbnail_referenced(safe, ignore_set_id=ignore_set_id):
+            return
+        try:
+            path = self._thumbnail_file_path(safe)
+            if os.path.isfile(path):
+                os.remove(path)
+        except OSError:
+            pass
 
     def list_sets(self) -> list[dict[str, Any]]:
         os.makedirs(self.sets_dir, exist_ok=True)
@@ -340,7 +505,10 @@ class SetStorage:
             },
             forced_id=set_id,
         )
+        old_thumb = existing.get("thumbnail", "") if existing else ""
         _atomic_write_json(self._set_file_path(set_id), record)
+        if old_thumb and old_thumb != record.get("thumbnail", ""):
+            self._cleanup_unused_thumbnail(old_thumb, ignore_set_id=set_id)
         return record
 
     def duplicate_set(self, set_id: str, new_name: str | None = None) -> dict[str, Any]:
@@ -359,7 +527,11 @@ class SetStorage:
         path = self._set_file_path(set_id)
         if not os.path.isfile(path):
             return False
+        existing = self.get_set(set_id)
+        old_thumb = existing.get("thumbnail", "") if existing else ""
         os.remove(path)
+        if old_thumb:
+            self._cleanup_unused_thumbnail(old_thumb, ignore_set_id=set_id)
         return True
 
     def get_state(self) -> dict[str, Any]:
@@ -390,6 +562,7 @@ class SetStorage:
         return {
             "id": forced_id,
             "name": str(raw.get("name") or "名称未設定セット").strip() or "名称未設定セット",
+            "thumbnail": sanitize_thumbnail_name(raw.get("thumbnail")),
             "separator": str(separator),
             "loras": normalize_lora_list(raw.get("loras")),
             "prompt_boxes": normalize_prompt_boxes(raw.get("prompt_boxes"), ensure_non_empty=True),
@@ -442,6 +615,7 @@ class SetStorage:
                         "instance_id": inst_id,
                         "source_set_id": source_id,
                         "name": name,
+                        "thumbnail": sanitize_thumbnail_name(entry.get("thumbnail")),
                         "enabled": entry.get("enabled") is not False,
                         "images_count": parsed_override,
                         "separator": str(entry.get("separator")) if entry.get("separator") is not None else ", ",

@@ -181,3 +181,4 @@ ComfyUI-Anima-SetStudio/
 - `GET /options`: 利用可能な拡散モデル・CLIP・VAE・サンプラー・スケジューラ・`Comfyui-Anima-Tools` 導入有無の一覧取得
 - `POST /build-jobs`: 共通設定＋呼び出し済みセット群＋除外カテゴリから、ComfyUI `/prompt` 投入用のAPIワークフローJSON配列を生成して返す（または直接キュー投入）
 - `POST /import-image`: アップロードされた画像（`multipart/form-data` または Base64 JSON）のメタデータからカテゴリ別プロンプト (`prompt_boxes`) と LoRAリスト (`loras`) を抽出して返す
+- `POST /thumbnails` / `GET /thumbnails/{filename}`: セット用サムネイル画像を長辺最大 320px の軽量 WebP（フォールバック時は JPEG）へ変換して `ComfyUI/user/anima_set_studio/thumbnails/` へ保存・配信する

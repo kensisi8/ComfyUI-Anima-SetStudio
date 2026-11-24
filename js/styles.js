@@ -992,6 +992,126 @@ const CSS = `
     align-items: center;
     gap: 6px;
 }
+
+/* Set Thumbnails */
+.ass-thumb-uploader {
+    position: relative;
+    width: 68px;
+    height: 88px;
+    flex: none;
+    border-radius: 9px;
+    border: 1.5px dashed color-mix(in srgb, var(--ass-text) 28%, transparent);
+    background: var(--ass-surface);
+    overflow: hidden;
+    display: grid;
+    place-items: center;
+    cursor: pointer;
+    transition: border-color 0.15s ease, background 0.15s ease;
+}
+.ass-thumb-uploader:hover,
+.ass-thumb-uploader.is-dragover {
+    border-color: var(--ass-accent);
+    background: color-mix(in srgb, var(--ass-accent) 12%, var(--ass-surface));
+}
+.ass-thumb-uploader.has-image {
+    border-style: solid;
+    border-color: var(--ass-line);
+}
+.ass-thumb-uploader.is-busy {
+    opacity: 0.7;
+    cursor: wait;
+}
+.ass-thumb-uploader img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}
+.ass-thumb-placeholder {
+    font-size: 20px;
+    opacity: 0.65;
+}
+.ass-thumb-clear {
+    position: absolute;
+    top: 3px;
+    right: 3px;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: rgba(15, 18, 24, 0.82);
+    color: #fff;
+    font-size: 10px;
+    line-height: 1;
+    cursor: pointer;
+    display: grid;
+    place-items: center;
+}
+.ass-thumb-clear:hover {
+    background: var(--ass-danger);
+}
+.ass-thumb-controls-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 5px;
+}
+.ass-thumb-meta {
+    font-size: 11px;
+    color: var(--ass-muted);
+}
+
+.ass-saved-item-row,
+.ass-picker-card-row {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    min-width: 0;
+}
+.ass-saved-item-meta,
+.ass-picker-card-content {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.ass-set-thumb-box {
+    flex: none;
+    border-radius: 7px;
+    overflow: hidden;
+    background: color-mix(in srgb, var(--ass-text) 7%, transparent);
+    border: 1px solid var(--ass-line);
+    display: grid;
+    place-items: center;
+    color: var(--ass-muted);
+}
+.ass-set-thumb-box img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}
+.ass-set-thumb-xs {
+    width: 38px;
+    height: 48px;
+    font-size: 14px;
+}
+.ass-set-thumb-sm {
+    width: 44px;
+    height: 58px;
+    font-size: 16px;
+}
+.ass-set-mini-thumb {
+    width: 24px;
+    height: 30px;
+    border-radius: 4px;
+    object-fit: cover;
+    flex: none;
+    border: 1px solid var(--ass-line);
+}
 `;
 
 export function injectStudioStyles() {

@@ -71,3 +71,14 @@
   - セット管理タブに「🖼️ 画像から読み込む」ドロップゾーン＆ファイル選択ボタンを追加（新規セットとして読込／編集中セットへ反映に対応）。
   - 読込結果バナー（復元元種別・LoRA件数・カテゴリ件数・自動仕分け⇔1枠切替ボタン）を実装。
   - `node --check`・全 `unittest`・機密チェックを実行して完了確認。
+
+---
+
+## フェーズ5：LoRA Manager 連携修正＆軽量サムネイル機能
+- [x] **Task 11: LoRA Manager `Apply to Node` 時の `this.graph?.canvasAction is not a function` 修正 (`js/bridge_anima_tools.js`)**
+  - 仮想 `AnimaMultiLoraLoader` ノードの `graph` スタブに `canvasAction` / `change` / `trigger` 等を実装し、`setDirtyCanvas` から元グラフ描画を呼ばずに安全に SetStudio へ同期するよう修正。
+
+- [x] **Task 12: セット用軽量サムネイルアップロード・保存・表示 (`backend/storage.py`, `backend/routes.py`, `js/api.js`, `js/views/studio_modal.js`, `js/views/set_card.js`, `js/styles.js`)**
+  - ブラウザ側Canvas＋バックエンド側Pillowの二段最適化で、長辺最大320px・軽量 `.webp`（フォールバック `.jpg`）へ自動縮小＆変換して保存。
+  - セット編集画面のサムネアップローダー（クリック＆ドロップ・削除・変換後サイズ表示）およびセット一覧・呼出モーダル・カードへのサムネ表示を追加。
+  - 参照カウント付きクリーンアップ（複製セットのサムネ保護＆不要ファイル自動削除）と単体テストを追加。

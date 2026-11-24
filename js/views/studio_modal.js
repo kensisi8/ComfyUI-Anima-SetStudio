@@ -5,10 +5,12 @@ import {
     fetchOptions,
     fetchSets,
     fetchState,
+    getSetThumbnailUrl,
     importSetFromImage,
     queueComfyPrompt,
     saveSet,
     saveState,
+    uploadSetThumbnail,
 } from "../api.js";
 import { configureAnimaToolsBridge } from "../bridge_anima_tools.js";
 import { renderLoraListEditor } from "../components/lora_list.js";
@@ -45,6 +47,7 @@ function makeInstanceFromSet(setRecord) {
         instance_id: `inst_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
         source_set_id: setRecord.id || "",
         name: setRecord.name || "無題セット",
+        thumbnail: setRecord.thumbnail || "",
         enabled: true,
         images_count: null,
         separator: setRecord.separator ?? ", ",
@@ -80,8 +83,10 @@ export class AnimaSetStudioModal {
         this.saveStateTimer = null;
         this.isExecuting = false;
         this.isImportingImage = false;
+        this.isUploadingThumb = false;
         this.importAsNewOnDrop = true;
         this.lastImportInfo = null;
+        this.lastThumbMeta = null;
         this.overlay = null;
         this.toastContainer = null;
     }
@@ -511,6 +516,7 @@ export class AnimaSetStudioModal {
                             const saved = await saveSet({
                                 id: targetItem.source_set_id,
                                 name: targetItem.name,
+                                thumbnail: targetItem.thumbnail || "",
                                 separator: targetItem.separator,
                                 loras: targetItem.loras,
                                 prompt_boxes: targetItem.prompt_boxes,
@@ -527,6 +533,7 @@ export class AnimaSetStudioModal {
                         try {
                             const saved = await saveSet({
                                 name: newName.trim(),
+                                thumbnail: targetItem.thumbnail || "",
                                 separator: targetItem.separator,
                                 loras: targetItem.loras,
                                 prompt_boxes: targetItem.prompt_boxes,
@@ -633,15 +640,23 @@ export class AnimaSetStudioModal {
                     .filter(Boolean);
                 const loraCount = (setItem.loras || []).filter((l) => l.enabled !== false).length;
 
+                const thumbUrl = getSetThumbnailUrl(setItem.thumbnail);
                 const card = document.createElement("button");
                 card.type = "button";
                 card.className = `ass-picker-card ${isPicked ? "is-picked" : ""}`;
                 card.innerHTML = `
-                    <div class="ass-picker-card-top">
-                        <strong>${escapeHtml(setItem.name)}</strong>
-                        <span class="ass-badge-soft">LoRA ${loraCount}</span>
+                    <div class="ass-picker-card-row">
+                        <div class="ass-set-thumb-box ass-set-thumb-sm ${thumbUrl ? "has-image" : ""}">
+                            ${thumbUrl ? `<img src="${escapeHtml(thumbUrl)}" alt="" loading="lazy" />` : `<span>🖼️</span>`}
+                        </div>
+                        <div class="ass-picker-card-content">
+                            <div class="ass-picker-card-top">
+                                <strong>${escapeHtml(setItem.name)}</strong>
+                                <span class="ass-badge-soft">LoRA ${loraCount}</span>
+                            </div>
+                            <div class="ass-picker-cats">${cats.length ? cats.map((c) => `<span>${escapeHtml(c)}</span>`).join("") : '<span class="ass-muted">カテゴリ名なし</span>'}</div>
+                        </div>
                     </div>
-                    <div class="ass-picker-cats">${cats.length ? cats.map((c) => `<span>${escapeHtml(c)}</span>`).join("") : '<span class="ass-muted">カテゴリ名なし</span>'}</div>
                 `;
                 card.onclick = () => {
                     const pos = pickedIds.indexOf(setItem.id);
@@ -752,15 +767,47 @@ export class AnimaSetStudioModal {
 
     startNewSet(withTemplate = false) {
         this.lastImportInfo = null;
+        this.lastThumbMeta = null;
         this.editingSet = {
             id: "",
             name: "",
+            thumbnail: "",
             separator: ", ",
             loras: [],
             prompt_boxes: withTemplate
                 ? DEFAULT_TEMPLATE_CATEGORIES.map((label) => createPromptBox({ label, text: "" }))
                 : [createPromptBox({ label: "品質" }), createPromptBox({ label: "衣装" })],
         };
+    }
+
+    async uploadThumbnailIntoEditor(file) {
+        if (!file || this.isUploadingThumb) return;
+        const lowerName = String(file.name || "").toLowerCase();
+        const isSupported =
+            String(file.type || "").startsWith("image/") ||
+            /\.(png|webp|jpe?g|gif|bmp)$/i.test(lowerName);
+        if (!isSupported) {
+            this.notify("画像ファイル（PNG / WebP / JPEG）を選択してください", "warn");
+            return;
+        }
+
+        this.isUploadingThumb = true;
+        this.render();
+        try {
+            const uploaded = await uploadSetThumbnail(file);
+            if (!this.editingSet) this.startNewSet(false);
+            this.editingSet.thumbnail = uploaded.thumbnail;
+            this.lastThumbMeta = uploaded;
+            const kb = Math.max(1, Math.round((uploaded.size_bytes || 0) / 1024));
+            const dims = uploaded.width && uploaded.height ? ` / ${uploaded.width}×${uploaded.height}` : "";
+            const fmt = String(uploaded.format || "webp").toUpperCase();
+            this.notify(`軽量サムネイルを設定しました (${fmt} 約${kb}KB${dims}) — 「💾 セットを保存」で確定`, "success");
+        } catch (err) {
+            this.notify(`サムネイル登録失敗: ${err.message}`, "error");
+        } finally {
+            this.isUploadingThumb = false;
+            this.render();
+        }
     }
 
     async importImageIntoEditor(file, { asNew = false } = {}) {
@@ -787,17 +834,33 @@ export class AnimaSetStudioModal {
             const loras = Array.isArray(imported.loras) ? deepClone(imported.loras) : [];
             const separator = imported.separator ?? ", ";
 
+            let autoThumb = null;
+            const shouldAutoThumb = asNew || !this.editingSet?.thumbnail;
+            if (shouldAutoThumb) {
+                try {
+                    autoThumb = await uploadSetThumbnail(file);
+                } catch (_) {
+                    autoThumb = null;
+                }
+            }
+
             if (asNew || !this.editingSet) {
                 this.editingSet = {
                     id: "",
                     name: imported.suggested_name || "画像から読込セット",
+                    thumbnail: autoThumb?.thumbnail || "",
                     separator,
                     loras,
                     prompt_boxes: boxes,
                 };
+                this.lastThumbMeta = autoThumb;
             } else {
                 if (!String(this.editingSet.name || "").trim()) {
                     this.editingSet.name = imported.suggested_name || "画像から読込セット";
+                }
+                if (autoThumb?.thumbnail) {
+                    this.editingSet.thumbnail = autoThumb.thumbnail;
+                    this.lastThumbMeta = autoThumb;
                 }
                 this.editingSet.separator = separator;
                 this.editingSet.loras = loras;
@@ -844,6 +907,13 @@ export class AnimaSetStudioModal {
             else this.startNewSet(true);
         }
 
+        const editingThumbUrl = getSetThumbnailUrl(this.editingSet.thumbnail);
+        const thumbInfoText = this.lastThumbMeta && this.lastThumbMeta.thumbnail === this.editingSet.thumbnail
+            ? `${String(this.lastThumbMeta.format || "webp").toUpperCase()} · 約${Math.max(1, Math.round((this.lastThumbMeta.size_bytes || 0) / 1024))}KB`
+            : this.editingSet.thumbnail
+                ? `${this.editingSet.thumbnail.split(".").pop().toUpperCase()} 軽量済`
+                : "最大320px WebPに自動軽量化";
+
         mainEl.innerHTML = `
             <div class="ass-sets-layout">
                 <aside class="ass-pane ass-pane-setlist">
@@ -860,11 +930,24 @@ export class AnimaSetStudioModal {
 
                 <section class="ass-pane ass-pane-editor" data-editor-pane>
                     <input type="file" accept="image/png,image/webp,image/jpeg,.png,.webp,.jpg,.jpeg" data-import-file hidden />
+                    <input type="file" accept="image/*" data-thumb-file hidden />
 
                     <div class="ass-editor-top">
+                        <div class="ass-thumb-uploader ${editingThumbUrl ? "has-image" : ""} ${this.isUploadingThumb ? "is-busy" : ""}" data-thumb-dropzone title="クリックまたは画像ドロップでセットのサムネイルを設定（自動で320px以下の軽量WebPに変換されます）">
+                            ${editingThumbUrl
+                                ? `<img src="${escapeHtml(editingThumbUrl)}" alt="セットサムネイル" />`
+                                : `<span class="ass-thumb-placeholder">${this.isUploadingThumb ? "⏳" : "📷"}</span>`}
+                            ${editingThumbUrl ? `<button type="button" class="ass-thumb-clear" data-thumb-clear title="サムネイルを削除">✕</button>` : ""}
+                        </div>
                         <div class="ass-field ass-grow">
                             <label class="ass-label">セット名</label>
                             <input type="text" class="ass-input ass-name-input" data-edit-name placeholder="例：制服衣装セット / カフェ背景セット" value="${escapeHtml(this.editingSet.name || "")}" />
+                            <div class="ass-thumb-controls-row">
+                                <button type="button" class="ass-btn-xs" data-thumb-pick ${this.isUploadingThumb ? "disabled" : ""}>
+                                    ${this.isUploadingThumb ? "⏳ 軽量化中..." : editingThumbUrl ? "📷 サムネ変更" : "📷 サムネ画像アップ"}
+                                </button>
+                                <span class="ass-thumb-meta">${escapeHtml(thumbInfoText)}</span>
+                            </div>
                         </div>
                         <div class="ass-editor-top-btns">
                             <button type="button" class="ass-btn-primary" data-save-set>💾 セットを保存</button>
@@ -953,6 +1036,58 @@ export class AnimaSetStudioModal {
             this.startNewSet(true);
             this.render();
         };
+
+        // Thumbnail upload controls & dedicated drag-and-drop
+        const thumbFileInput = mainEl.querySelector("[data-thumb-file]");
+        const thumbDropzone = mainEl.querySelector("[data-thumb-dropzone]");
+        const openThumbPicker = () => {
+            if (this.isUploadingThumb) return;
+            thumbFileInput.value = "";
+            thumbFileInput.click();
+        };
+        mainEl.querySelector("[data-thumb-pick]").onclick = openThumbPicker;
+        thumbDropzone.onclick = (e) => {
+            if (e.target.closest("[data-thumb-clear]")) return;
+            openThumbPicker();
+        };
+        const thumbClearBtn = mainEl.querySelector("[data-thumb-clear]");
+        if (thumbClearBtn) {
+            thumbClearBtn.onclick = (e) => {
+                e.stopPropagation();
+                this.editingSet.thumbnail = "";
+                this.lastThumbMeta = null;
+                this.render();
+            };
+        }
+        thumbFileInput.onchange = () => {
+            const file = thumbFileInput.files?.[0];
+            if (file) void this.uploadThumbnailIntoEditor(file);
+        };
+        thumbDropzone.addEventListener("dragenter", (e) => {
+            if (!Array.from(e.dataTransfer?.types || []).includes("Files")) return;
+            e.preventDefault();
+            e.stopPropagation();
+            thumbDropzone.classList.add("is-dragover");
+        });
+        thumbDropzone.addEventListener("dragover", (e) => {
+            if (!Array.from(e.dataTransfer?.types || []).includes("Files")) return;
+            e.preventDefault();
+            e.stopPropagation();
+            e.dataTransfer.dropEffect = "copy";
+            thumbDropzone.classList.add("is-dragover");
+        });
+        thumbDropzone.addEventListener("dragleave", (e) => {
+            e.stopPropagation();
+            thumbDropzone.classList.remove("is-dragover");
+        });
+        thumbDropzone.addEventListener("drop", (e) => {
+            if (!Array.from(e.dataTransfer?.types || []).includes("Files")) return;
+            e.preventDefault();
+            e.stopPropagation();
+            thumbDropzone.classList.remove("is-dragover");
+            const file = e.dataTransfer?.files?.[0];
+            if (file) void this.uploadThumbnailIntoEditor(file);
+        });
 
         // Image import controls & drag-and-drop
         const fileInput = mainEl.querySelector("[data-import-file]");
@@ -1064,11 +1199,21 @@ export class AnimaSetStudioModal {
                 const saved = await saveSet({
                     id: this.editingSet.id || undefined,
                     name: trimmed,
+                    thumbnail: this.editingSet.thumbnail || "",
                     separator: this.editingSet.separator ?? ", ",
                     loras: this.editingSet.loras || [],
                     prompt_boxes: this.editingSet.prompt_boxes || [],
                 });
                 this.editingSet = deepClone(saved);
+                // Keep thumbnails in sync for any already-called instances of this set
+                let syncedInstances = false;
+                for (const inst of this.state?.selected_sets || []) {
+                    if (inst.source_set_id === saved.id) {
+                        inst.thumbnail = saved.thumbnail || "";
+                        syncedInstances = true;
+                    }
+                }
+                if (syncedInstances) this.scheduleSaveState();
                 await this.refreshSetsList();
                 this.render();
                 this.notify(`セット「${saved.name}」を保存しました`, "success");
@@ -1116,15 +1261,23 @@ export class AnimaSetStudioModal {
                     .filter(Boolean)
                     .slice(0, 6);
 
+                const thumbUrl = getSetThumbnailUrl(setItem.thumbnail);
                 const row = document.createElement("div");
                 row.className = `ass-saved-item ${isSelected ? "is-selected" : ""}`;
                 row.innerHTML = `
                     <div class="ass-saved-item-main" data-select>
-                        <div class="ass-saved-item-title">
-                            <strong>${escapeHtml(setItem.name)}</strong>
-                            <span class="ass-badge-soft">LoRA ${loraCount}</span>
+                        <div class="ass-saved-item-row">
+                            <div class="ass-set-thumb-box ass-set-thumb-xs ${thumbUrl ? "has-image" : ""}">
+                                ${thumbUrl ? `<img src="${escapeHtml(thumbUrl)}" alt="" loading="lazy" />` : `<span>🖼️</span>`}
+                            </div>
+                            <div class="ass-saved-item-meta">
+                                <div class="ass-saved-item-title">
+                                    <strong>${escapeHtml(setItem.name)}</strong>
+                                    <span class="ass-badge-soft">LoRA ${loraCount}</span>
+                                </div>
+                                <div class="ass-saved-item-cats">${cats.map((c) => `<span>${escapeHtml(c)}</span>`).join("")}</div>
+                            </div>
                         </div>
-                        <div class="ass-saved-item-cats">${cats.map((c) => `<span>${escapeHtml(c)}</span>`).join("")}</div>
                     </div>
                     <div class="ass-saved-item-actions">
                         <button type="button" class="ass-btn-xs" data-add-to-col title="イラスト集作成リストに追加">+ 集へ</button>
@@ -1135,6 +1288,7 @@ export class AnimaSetStudioModal {
 
                 row.querySelector("[data-select]").onclick = () => {
                     this.lastImportInfo = null;
+                    this.lastThumbMeta = null;
                     this.editingSet = deepClone(setItem);
                     this.render();
                 };

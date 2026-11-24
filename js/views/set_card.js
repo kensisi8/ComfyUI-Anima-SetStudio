@@ -1,3 +1,4 @@
+import { getSetThumbnailUrl } from "../api.js";
 import { renderLoraListEditor } from "../components/lora_list.js";
 import { renderPromptBoxesEditor } from "../components/prompt_boxes.js";
 
@@ -35,6 +36,7 @@ export function createSelectedSetCard(item, options) {
     const enabled = item.enabled !== false;
     const countPlaceholder = String(defaultImagesPerSet || 1);
     const activeLoraCount = (item.loras || []).filter((l) => l.enabled !== false).length;
+    const thumbUrl = getSetThumbnailUrl(item.thumbnail);
 
     const card = document.createElement("div");
     card.className = `ass-set-card ${enabled ? "" : "is-muted"} ${collapsed ? "is-collapsed" : ""}`;
@@ -47,6 +49,7 @@ export function createSelectedSetCard(item, options) {
             <span class="ass-set-order">#${index + 1}</span>
             <button type="button" class="ass-set-card-title-btn" data-toggle-collapse title="クリックで開閉">
                 <span class="ass-caret">${collapsed ? "▸" : "▾"}</span>
+                ${thumbUrl ? `<img class="ass-set-mini-thumb" src="${escapeHtml(thumbUrl)}" alt="" loading="lazy" />` : ""}
                 <span class="ass-set-card-name">${escapeHtml(item.name || "無題セット")}</span>
                 <span class="ass-badge-soft">LoRA ${activeLoraCount}</span>
             </button>

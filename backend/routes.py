@@ -243,6 +243,25 @@ def handle_api_action(
             )
             return 200, {"success": True, "imported": imported}
 
+        if action == "upload_thumbnail":
+            req = payload or {}
+            raw_bytes = req.get("image_bytes")
+            if raw_bytes is None:
+                b64_val = str(req.get("image_base64") or "").strip()
+                if b64_val.startswith("data:") and "," in b64_val:
+                    b64_val = b64_val.split(",", 1)[1]
+                if not b64_val:
+                    raise ValueError("サムネイル画像が指定されていません")
+                try:
+                    raw_bytes = base64.b64decode(b64_val)
+                except Exception as exc:
+                    raise ValueError("サムネイル画像のBase64デコードに失敗しました") from exc
+            if not isinstance(raw_bytes, (bytes, bytearray)):
+                raise ValueError("サムネイル画像の形式が不正です")
+            saved_thumb = storage.save_thumbnail(bytes(raw_bytes))
+            saved_thumb["url"] = f"{API_PREFIX}/thumbnails/{saved_thumb['thumbnail']}"
+            return 200, {"success": True, **saved_thumb}
+
         return 404, {"success": False, "error": f"Unknown action: {action}"}
     except FileNotFoundError as exc:
         return 404, {"success": False, "error": str(exc)}
@@ -372,6 +391,62 @@ def register_routes(storage: SetStorage | None = None) -> bool:
         data = await _read_json(request)
         status, body = handle_api_action(store, "import_image", payload=data)
         return web.json_response(body, status=status)
+
+    @routes.post(f"{API_PREFIX}/thumbnails")
+    async def api_upload_thumbnail(request):
+        content_type = (request.content_type or "").lower()
+        if content_type.startswith("multipart/"):
+            reader = await request.multipart()
+            image_bytes = b""
+            while True:
+                field = await reader.next()
+                if field is None:
+                    break
+                if field.name == "image":
+                    chunks: list[bytes] = []
+                    total_len = 0
+                    while True:
+                        chunk = await field.read_chunk(65536)
+                        if not chunk:
+                            break
+                        total_len += len(chunk)
+                        if total_len > MAX_IMAGE_UPLOAD_BYTES:
+                            return web.json_response(
+                                {"success": False, "error": "画像サイズが大きすぎます（上限 30MB）"},
+                                status=400,
+                            )
+                        chunks.append(chunk)
+                    image_bytes = b"".join(chunks)
+                    break
+            status, body = handle_api_action(
+                store,
+                "upload_thumbnail",
+                payload={"image_bytes": image_bytes},
+            )
+            return web.json_response(body, status=status)
+
+        data = await _read_json(request)
+        status, body = handle_api_action(store, "upload_thumbnail", payload=data)
+        return web.json_response(body, status=status)
+
+    @routes.get(f"{API_PREFIX}/thumbnails/{{filename}}")
+    async def api_get_thumbnail(request):
+        filename = request.match_info.get("filename", "")
+        try:
+            path = store.get_thumbnail_path(filename)
+        except ValueError as exc:
+            return web.json_response({"success": False, "error": str(exc)}, status=400)
+        if not path:
+            return web.json_response({"success": False, "error": "サムネイルが見つかりません"}, status=404)
+        ext = os.path.splitext(path)[1].lower()
+        mime = "image/webp" if ext == ".webp" else "image/jpeg"
+        with open(path, "rb") as f:
+            raw = f.read()
+        return web.Response(
+            body=raw,
+            content_type=mime,
+            headers={"Cache-Control": "public, max-age=31536000, immutable"},
+        )
 
     _ROUTES_REGISTERED = True
     print("[Anima SetStudio] Registered API routes under /anima-set-studio/api")

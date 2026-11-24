@@ -112,6 +112,50 @@ class TestSetStorage(unittest.TestCase):
         self.assertEqual(reloaded["selected_sets"][0]["name"], "テストセット")
         self.assertTrue(os.path.isfile(self.storage.state_path))
 
+    def test_thumbnail_save_compression_and_refcount_cleanup(self):
+        # Create a 640x960 raw image (or WebP fallback if Pillow is absent)
+        try:
+            import io
+            from PIL import Image  # type: ignore
+
+            buf = io.BytesIO()
+            Image.new("RGB", (640, 960), (120, 160, 210)).save(buf, format="PNG")
+            raw_img = buf.getvalue()
+            has_pil = True
+        except Exception:
+            # Minimal valid WebP RIFF header for zero-dependency test environments
+            raw_img = b"RIFF\x14\x00\x00\x00WEBPVP8 \x08\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+            has_pil = False
+
+        saved_thumb = self.storage.save_thumbnail(raw_img)
+        thumb_name = saved_thumb["thumbnail"]
+        self.assertTrue(thumb_name.startswith("thumb_"))
+        self.assertTrue(thumb_name.endswith(".webp") or thumb_name.endswith(".jpg"))
+        thumb_path = self.storage.get_thumbnail_path(thumb_name)
+        self.assertIsNotNone(thumb_path)
+        self.assertTrue(os.path.isfile(thumb_path))
+        if has_pil:
+            self.assertEqual(saved_thumb["format"], "webp")
+            self.assertLessEqual(max(saved_thumb["width"], saved_thumb["height"]), 320)
+
+        # Attach thumbnail to a set and duplicate it (both share the file)
+        s1 = self.storage.save_set({"name": "サムネ付きセット", "thumbnail": thumb_name})
+        self.assertEqual(s1["thumbnail"], thumb_name)
+        s2 = self.storage.duplicate_set(s1["id"])
+        self.assertEqual(s2["thumbnail"], thumb_name)
+
+        # Deleting only s1 must keep the thumbnail file because s2 still references it
+        self.storage.delete_set(s1["id"])
+        self.assertTrue(os.path.isfile(thumb_path))
+
+        # Deleting s2 cleans up the now-unreferenced thumbnail file
+        self.storage.delete_set(s2["id"])
+        self.assertFalse(os.path.exists(thumb_path))
+
+        # Path traversal in thumbnail lookup is rejected
+        with self.assertRaises(ValueError):
+            self.storage.get_thumbnail_path("../secret.webp")
+
 
 if __name__ == "__main__":
     unittest.main()

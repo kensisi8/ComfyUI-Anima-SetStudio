@@ -11,6 +11,7 @@ let mediaModulePromise = null;
 let virtualLoraNode = null;
 let suppressLoraSync = false;
 let activeLoraChangeHandler = null;
+let lastSyncedLoraJson = "";
 
 const FALLBACK_RANDOM_SELECTORS = [
     { kind: "artist", label: "Artists" },
@@ -137,6 +138,15 @@ export async function openAnimaPromptSelector(box, onApply) {
     return true;
 }
 
+function emitVirtualLoraChange(node) {
+    if (suppressLoraSync || !node) return;
+    if (typeof activeLoraChangeHandler !== "function" || !Array.isArray(node._almLoras)) return;
+    const serialized = JSON.stringify(node._almLoras);
+    if (serialized === lastSyncedLoraJson) return;
+    lastSyncedLoraJson = serialized;
+    activeLoraChangeHandler(deepClone(node._almLoras));
+}
+
 function ensureVirtualLoraNode() {
     if (virtualLoraNode) return virtualLoraNode;
     const LG = window.LiteGraph;
@@ -153,17 +163,40 @@ function ensureVirtualLoraNode() {
     }
 
     node.size = node.size || [320, 200];
+    // Provide a safe off-canvas graph stub implementing modern LiteGraph methods
+    // (including canvasAction, beforeChange, afterChange, setDirtyCanvas) so
+    // Comfyui-Anima-Tools never throws when updating this detached virtual node.
     node.graph = {
+        _version: 0,
+        _nodes: [],
+        links: {},
+        list_of_graphcanvas: [],
         beforeChange() {},
-        afterChange() {},
+        afterChange() {
+            emitVirtualLoraChange(node);
+        },
+        change() {
+            emitVirtualLoraChange(node);
+        },
+        canvasAction() {},
         setDirtyCanvas() {},
+        trigger() {},
+        sendEventToAllNodes() {},
     };
-    const origDirty = node.setDirtyCanvas?.bind(node);
-    node.setDirtyCanvas = function (...args) {
-        origDirty?.(...args);
-        if (suppressLoraSync) return;
-        if (typeof activeLoraChangeHandler === "function" && Array.isArray(node._almLoras)) {
-            activeLoraChangeHandler(deepClone(node._almLoras));
+
+    node.setDirtyCanvas = function () {
+        emitVirtualLoraChange(node);
+    };
+
+    const origSetSize = node.setSize?.bind(node);
+    node.setSize = function (size) {
+        if (Array.isArray(size) && size.length >= 2) {
+            node.size = [size[0], size[1]];
+        }
+        try {
+            origSetSize?.(size);
+        } catch (_) {
+            // Ignore canvas-only resize errors on the detached virtual node.
         }
     };
 
@@ -182,12 +215,14 @@ export function openAnimaLoraManager(currentLoras, onChange) {
         return false;
     }
     const cloned = deepClone(Array.isArray(currentLoras) ? currentLoras : []);
+    const serialized = JSON.stringify(cloned);
     suppressLoraSync = true;
     try {
         node._almLoras = cloned;
+        lastSyncedLoraJson = serialized;
         const jsonWidget = node.widgets?.find((w) => w.name === "lora_list_json");
         if (jsonWidget) {
-            jsonWidget.value = JSON.stringify(cloned);
+            jsonWidget.value = serialized;
         }
     } finally {
         suppressLoraSync = false;

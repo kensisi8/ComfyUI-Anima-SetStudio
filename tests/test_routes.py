@@ -143,6 +143,32 @@ class TestApiRoutes(unittest.TestCase):
         self.assertEqual(status_err, 400)
         self.assertFalse(body_err["success"])
 
+    def test_upload_thumbnail_route_action(self):
+        try:
+            import io
+            from PIL import Image  # type: ignore
+
+            buf = io.BytesIO()
+            Image.new("RGB", (512, 768), (80, 120, 180)).save(buf, format="PNG")
+            img_bytes = buf.getvalue()
+        except Exception:
+            img_bytes = b"RIFF\x14\x00\x00\x00WEBPVP8 \x08\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+
+        b64 = base64.b64encode(img_bytes).decode("ascii")
+        status, res = handle_api_action(
+            self.storage,
+            "upload_thumbnail",
+            payload={"image_base64": f"data:image/png;base64,{b64}"},
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(res["success"])
+        self.assertTrue(res["thumbnail"].endswith((".webp", ".jpg")))
+        self.assertIn("/anima-set-studio/api/thumbnails/", res["url"])
+
+        status_bad, err_bad = handle_api_action(self.storage, "upload_thumbnail", payload={})
+        self.assertEqual(status_bad, 400)
+        self.assertFalse(err_bad["success"])
+
 
 if __name__ == "__main__":
     unittest.main()
