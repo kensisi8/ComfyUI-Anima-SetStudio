@@ -69,6 +69,20 @@ export async function buildBatchJobs(payload) {
     });
 }
 
+export async function importSetFromImage(file) {
+    const formData = new FormData();
+    formData.append("image", file, file?.name || "image.png");
+    const response = await fetch(`${API_BASE}/import-image`, {
+        method: "POST",
+        body: formData,
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data.success === false) {
+        throw new Error(data.error || `画像読み込みエラー (${response.status})`);
+    }
+    return data.imported;
+}
+
 /**
  * Submit a single built job directly into ComfyUI's /prompt queue.
  */

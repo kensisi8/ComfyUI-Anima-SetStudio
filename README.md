@@ -7,6 +7,9 @@ ComfyUI 上で **Anima モデル** を使ってキャラクターイラスト集
 
 ### 1. LoRA / プロンプトセット管理
 - `LoRAリスト`（サムネ・ON/OFF・強度スライダー・トリガーコピー・本家 `LoRA Manager` ポップアップ）と `カテゴリ別プロンプト`（自由なカテゴリ名・ドラッグ並替・一時無効化・実行時ランダム・本家 `Select` ポップアップ）を **1つのセット** として名前を付けて保存・複製・削除できます。
+- **画像からのセット読み取り（インポート）**: セット管理画面に生成画像（PNG / WebP / JPEG）をドラッグ＆ドロップまたは選択すると、埋め込みメタデータから **カテゴリ別プロンプト** と **LoRAリスト** を自動抽出してセット編集欄へ取り込めます。
+  - `ComfyUI`（`Anima Prompt Plus` / `Anima*Selector` / `Anima Multi LoRA Loader` / `LoraLoader` / `Power Lora Loader` / `CLIPTextEncode`）および `WebUI (A1111)` の `parameters` 形式に対応。
+  - 単一テキストプロンプトの画像も自動でカテゴリ分け（`品質`・`画師`・`キャラ`・`体格`・`衣装`・`ポーズ`・`背景`・`その他`）され、ボタン1つで「1枠のまま」と切り替えられます。
 - 保存先は `ComfyUI/user/anima_set_studio/sets/`（Colab環境では Googleドライブへ自動永続化）。
 
 ### 2. イラスト集作成・一括生成
@@ -23,7 +26,7 @@ ComfyUI 上で **Anima モデル** を使ってキャラクターイラスト集
 ### 通常の ComfyUI 環境
 ```bash
 cd ComfyUI/custom_nodes
-git clone https://github.com/<あなたのユーザー名>/ComfyUI-Anima-SetStudio.git
+git clone https://github.com/kensisi8/ComfyUI-Anima-SetStudio.git
 ```
 ※追加の `pip install` は不要です（Python標準ライブラリ＋ComfyUI組込ライブラリのみ使用）。
 ※`Select` や `LoRA Manager` ポップアップの全機能を使うため、`Comfyui-Anima-Tools` との併用を推奨します。

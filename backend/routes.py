@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import base64
 import os
 from typing import Any
 
 from .composer import build_batch_jobs
+from .image_importer import import_set_from_image_bytes
 from .storage import DEFAULT_GENERATION_SETTINGS, SetStorage
 
 API_PREFIX = "/anima-set-studio/api"
+MAX_IMAGE_UPLOAD_BYTES = 30 * 1024 * 1024  # 30 MB
 
 FALLBACK_SAMPLERS = [
     "er_sde",
@@ -213,6 +216,33 @@ def handle_api_action(
                 "use_anima_tools": use_anima,
             }
 
+        if action == "import_image":
+            req = payload or {}
+            raw_bytes = req.get("image_bytes")
+            if raw_bytes is None:
+                b64_val = str(req.get("image_base64") or "").strip()
+                if b64_val.startswith("data:") and "," in b64_val:
+                    b64_val = b64_val.split(",", 1)[1]
+                if not b64_val:
+                    raise ValueError("画像ファイルが指定されていません")
+                try:
+                    raw_bytes = base64.b64decode(b64_val)
+                except Exception as exc:
+                    raise ValueError("画像データのBase64デコードに失敗しました") from exc
+            if not isinstance(raw_bytes, (bytes, bytearray)):
+                raise ValueError("画像データの形式が不正です")
+            if len(raw_bytes) > MAX_IMAGE_UPLOAD_BYTES:
+                raise ValueError("画像サイズが大きすぎます（上限 30MB）")
+
+            opts = options_provider()
+            available_loras = opts.get("loras") if isinstance(opts, dict) else None
+            imported = import_set_from_image_bytes(
+                bytes(raw_bytes),
+                filename=str(req.get("filename") or ""),
+                available_loras=available_loras,
+            )
+            return 200, {"success": True, "imported": imported}
+
         return 404, {"success": False, "error": f"Unknown action: {action}"}
     except FileNotFoundError as exc:
         return 404, {"success": False, "error": str(exc)}
@@ -302,6 +332,45 @@ def register_routes(storage: SetStorage | None = None) -> bool:
     async def api_build_jobs(request):
         data = await _read_json(request)
         status, body = handle_api_action(store, "build_jobs", payload=data)
+        return web.json_response(body, status=status)
+
+    @routes.post(f"{API_PREFIX}/import-image")
+    async def api_import_image(request):
+        content_type = (request.content_type or "").lower()
+        if content_type.startswith("multipart/"):
+            reader = await request.multipart()
+            image_bytes = b""
+            filename = ""
+            while True:
+                field = await reader.next()
+                if field is None:
+                    break
+                if field.name == "image":
+                    filename = field.filename or ""
+                    chunks: list[bytes] = []
+                    total_len = 0
+                    while True:
+                        chunk = await field.read_chunk(65536)
+                        if not chunk:
+                            break
+                        total_len += len(chunk)
+                        if total_len > MAX_IMAGE_UPLOAD_BYTES:
+                            return web.json_response(
+                                {"success": False, "error": "画像サイズが大きすぎます（上限 30MB）"},
+                                status=400,
+                            )
+                        chunks.append(chunk)
+                    image_bytes = b"".join(chunks)
+                    break
+            status, body = handle_api_action(
+                store,
+                "import_image",
+                payload={"image_bytes": image_bytes, "filename": filename},
+            )
+            return web.json_response(body, status=status)
+
+        data = await _read_json(request)
+        status, body = handle_api_action(store, "import_image", payload=data)
         return web.json_response(body, status=status)
 
     _ROUTES_REGISTERED = True

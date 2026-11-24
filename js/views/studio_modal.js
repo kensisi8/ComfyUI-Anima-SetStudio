@@ -5,6 +5,7 @@ import {
     fetchOptions,
     fetchSets,
     fetchState,
+    importSetFromImage,
     queueComfyPrompt,
     saveSet,
     saveState,
@@ -78,6 +79,9 @@ export class AnimaSetStudioModal {
         this.collapsedCards = new Set();
         this.saveStateTimer = null;
         this.isExecuting = false;
+        this.isImportingImage = false;
+        this.importAsNewOnDrop = true;
+        this.lastImportInfo = null;
         this.overlay = null;
         this.toastContainer = null;
     }
@@ -747,6 +751,7 @@ export class AnimaSetStudioModal {
     }
 
     startNewSet(withTemplate = false) {
+        this.lastImportInfo = null;
         this.editingSet = {
             id: "",
             name: "",
@@ -756,6 +761,75 @@ export class AnimaSetStudioModal {
                 ? DEFAULT_TEMPLATE_CATEGORIES.map((label) => createPromptBox({ label, text: "" }))
                 : [createPromptBox({ label: "品質" }), createPromptBox({ label: "衣装" })],
         };
+    }
+
+    async importImageIntoEditor(file, { asNew = false } = {}) {
+        if (!file || this.isImportingImage) return;
+        const lowerName = String(file.name || "").toLowerCase();
+        const isSupported =
+            String(file.type || "").startsWith("image/") ||
+            /\.(png|webp|jpe?g)$/i.test(lowerName);
+        if (!isSupported) {
+            this.notify("PNG / WebP / JPEG 画像ファイルを選択してください", "warn");
+            return;
+        }
+
+        this.isImportingImage = true;
+        this.render();
+        try {
+            const imported = await importSetFromImage(file);
+            const boxes = Array.isArray(imported.prompt_boxes) && imported.prompt_boxes.length
+                ? deepClone(imported.prompt_boxes)
+                : [createPromptBox({ label: "プロンプト" })];
+            const rawBoxes = Array.isArray(imported.raw_prompt_boxes) && imported.raw_prompt_boxes.length
+                ? deepClone(imported.raw_prompt_boxes)
+                : deepClone(boxes);
+            const loras = Array.isArray(imported.loras) ? deepClone(imported.loras) : [];
+            const separator = imported.separator ?? ", ";
+
+            if (asNew || !this.editingSet) {
+                this.editingSet = {
+                    id: "",
+                    name: imported.suggested_name || "画像から読込セット",
+                    separator,
+                    loras,
+                    prompt_boxes: boxes,
+                };
+            } else {
+                if (!String(this.editingSet.name || "").trim()) {
+                    this.editingSet.name = imported.suggested_name || "画像から読込セット";
+                }
+                this.editingSet.separator = separator;
+                this.editingSet.loras = loras;
+                this.editingSet.prompt_boxes = boxes;
+            }
+
+            this.lastImportInfo = {
+                filename: file.name || "image",
+                source_type: imported.source_type || "",
+                source_label: imported.source_label || "画像メタデータ",
+                auto_categorized: Boolean(imported.auto_categorized),
+                mode: imported.auto_categorized ? "auto" : "raw",
+                auto_boxes: deepClone(boxes),
+                raw_boxes: deepClone(rawBoxes),
+                lora_count: loras.length,
+                box_count: boxes.length,
+                warnings: Array.isArray(imported.warnings) ? [...imported.warnings] : [],
+            };
+
+            this.notify(
+                `画像から読み込みました（LoRA ${loras.length}件 / プロンプト ${boxes.length}枠）— 確認後に「💾 セットを保存」を押してください`,
+                "success",
+            );
+            if (this.lastImportInfo.warnings.length) {
+                this.notify(this.lastImportInfo.warnings[0], "warn");
+            }
+        } catch (err) {
+            this.notify(`画像読み込み失敗: ${err.message}`, "error");
+        } finally {
+            this.isImportingImage = false;
+            this.render();
+        }
     }
 
     async refreshSetsList() {
@@ -779,11 +853,14 @@ export class AnimaSetStudioModal {
                     <div class="ass-new-set-row">
                         <button type="button" class="ass-btn-primary-sm" data-new-set>+ 新規セット</button>
                         <button type="button" class="ass-btn-xs" data-new-template-set title="品質・体格・キャラ・衣装・ポーズ・背景の6枠入りで作成">+ 6カテゴリ雛形</button>
+                        <button type="button" class="ass-btn-xs" data-new-from-image title="生成画像のメタデータから新規セットを作成" ${this.isImportingImage ? "disabled" : ""}>🖼️ 画像から新規</button>
                     </div>
                     <div class="ass-saved-sets-list" data-saved-list></div>
                 </aside>
 
-                <section class="ass-pane ass-pane-editor">
+                <section class="ass-pane ass-pane-editor" data-editor-pane>
+                    <input type="file" accept="image/png,image/webp,image/jpeg,.png,.webp,.jpg,.jpeg" data-import-file hidden />
+
                     <div class="ass-editor-top">
                         <div class="ass-field ass-grow">
                             <label class="ass-label">セット名</label>
@@ -793,6 +870,45 @@ export class AnimaSetStudioModal {
                             <button type="button" class="ass-btn-primary" data-save-set>💾 セットを保存</button>
                         </div>
                     </div>
+
+                    <div class="ass-import-dropzone ${this.isImportingImage ? "is-busy" : ""}" data-import-dropzone>
+                        <div class="ass-import-dropzone-main">
+                            <span class="ass-import-icon">${this.isImportingImage ? "⏳" : "🖼️"}</span>
+                            <div class="ass-import-text">
+                                <strong>${this.isImportingImage ? "画像メタデータを解析中..." : "画像からカテゴリ別プロンプトとLoRAを読み込む"}</strong>
+                                <span>PNG / WebP / JPEG をここにドラッグ＆ドロップ、または右のボタンから選択（ComfyUI / Anima-Tools / A1111 対応）</span>
+                            </div>
+                        </div>
+                        <div class="ass-import-actions">
+                            <label class="ass-import-mode-check" title="チェック時はドロップで新規セットを作成します（オフ時は現在編集中のセット欄へ上書き読込）">
+                                <input type="checkbox" data-import-as-new ${this.importAsNewOnDrop ? "checked" : ""} />
+                                <span>ドロップ時は新規</span>
+                            </label>
+                            <button type="button" class="ass-btn-xs" data-import-btn-new ${this.isImportingImage ? "disabled" : ""}>画像から新規</button>
+                            <button type="button" class="ass-btn-xs" data-import-btn-current ${this.isImportingImage ? "disabled" : ""}>編集中へ読込</button>
+                        </div>
+                    </div>
+
+                    ${this.lastImportInfo ? `
+                        <div class="ass-import-banner" data-import-banner>
+                            <div class="ass-import-banner-main">
+                                <span class="ass-badge-soft">${escapeHtml(this.lastImportInfo.source_label)}</span>
+                                <span class="ass-import-banner-summary">
+                                    <strong>${escapeHtml(this.lastImportInfo.filename)}</strong> から読込済
+                                    （LoRA ${this.lastImportInfo.lora_count}件 / プロンプト ${(this.editingSet.prompt_boxes || []).length}枠）
+                                </span>
+                                ${this.lastImportInfo.warnings.length ? `<span class="ass-import-warning">⚠️ ${escapeHtml(this.lastImportInfo.warnings.join(" / "))}</span>` : ""}
+                            </div>
+                            <div class="ass-import-banner-actions">
+                                ${this.lastImportInfo.auto_categorized ? `
+                                    <button type="button" class="ass-btn-xs" data-toggle-import-mode title="単一プロンプト画像の自動カテゴリ分けと1枠表示を切り替えます">
+                                        ${this.lastImportInfo.mode === "auto" ? "📄 1枠のままにする" : "🏷️ 自動カテゴリ分けに戻す"}
+                                    </button>
+                                ` : ""}
+                                <button type="button" class="ass-icon-btn" data-dismiss-import-banner title="閉じる">✕</button>
+                            </div>
+                        </div>
+                    ` : ""}
 
                     <div class="ass-editor-grid">
                         <div class="ass-section-block">
@@ -837,6 +953,99 @@ export class AnimaSetStudioModal {
             this.startNewSet(true);
             this.render();
         };
+
+        // Image import controls & drag-and-drop
+        const fileInput = mainEl.querySelector("[data-import-file]");
+        const dropzone = mainEl.querySelector("[data-import-dropzone]");
+        const editorPane = mainEl.querySelector("[data-editor-pane]");
+        const asNewCheckbox = mainEl.querySelector("[data-import-as-new]");
+        let pendingImportAsNew = this.importAsNewOnDrop;
+
+        const openImagePicker = (asNew) => {
+            pendingImportAsNew = Boolean(asNew);
+            fileInput.value = "";
+            fileInput.click();
+        };
+
+        asNewCheckbox.onchange = () => {
+            this.importAsNewOnDrop = asNewCheckbox.checked;
+        };
+        mainEl.querySelector("[data-new-from-image]").onclick = () => openImagePicker(true);
+        mainEl.querySelector("[data-import-btn-new]").onclick = (e) => {
+            e.stopPropagation();
+            openImagePicker(true);
+        };
+        mainEl.querySelector("[data-import-btn-current]").onclick = (e) => {
+            e.stopPropagation();
+            openImagePicker(false);
+        };
+        dropzone.onclick = (e) => {
+            if (e.target.closest("button, label, input")) return;
+            openImagePicker(this.importAsNewOnDrop);
+        };
+
+        fileInput.onchange = () => {
+            const file = fileInput.files?.[0];
+            if (file) {
+                void this.importImageIntoEditor(file, { asNew: pendingImportAsNew });
+            }
+        };
+
+        const hasDraggedFiles = (e) => {
+            const types = e.dataTransfer?.types;
+            if (!types) return false;
+            return Array.from(types).includes("Files");
+        };
+
+        let dragDepth = 0;
+        editorPane.addEventListener("dragenter", (e) => {
+            if (!hasDraggedFiles(e)) return;
+            e.preventDefault();
+            dragDepth += 1;
+            dropzone.classList.add("is-dragover");
+        });
+        editorPane.addEventListener("dragover", (e) => {
+            if (!hasDraggedFiles(e)) return;
+            e.preventDefault();
+            e.dataTransfer.dropEffect = "copy";
+            dropzone.classList.add("is-dragover");
+        });
+        editorPane.addEventListener("dragleave", (e) => {
+            if (!hasDraggedFiles(e)) return;
+            dragDepth = Math.max(0, dragDepth - 1);
+            if (dragDepth === 0) dropzone.classList.remove("is-dragover");
+        });
+        editorPane.addEventListener("drop", (e) => {
+            if (!hasDraggedFiles(e)) return;
+            e.preventDefault();
+            dragDepth = 0;
+            dropzone.classList.remove("is-dragover");
+            const file = e.dataTransfer?.files?.[0];
+            if (file) {
+                void this.importImageIntoEditor(file, { asNew: this.importAsNewOnDrop });
+            }
+        });
+
+        const toggleModeBtn = mainEl.querySelector("[data-toggle-import-mode]");
+        if (toggleModeBtn && this.lastImportInfo) {
+            toggleModeBtn.onclick = () => {
+                if (this.lastImportInfo.mode === "auto") {
+                    this.lastImportInfo.mode = "raw";
+                    this.editingSet.prompt_boxes = deepClone(this.lastImportInfo.raw_boxes);
+                } else {
+                    this.lastImportInfo.mode = "auto";
+                    this.editingSet.prompt_boxes = deepClone(this.lastImportInfo.auto_boxes);
+                }
+                this.render();
+            };
+        }
+        const dismissBannerBtn = mainEl.querySelector("[data-dismiss-import-banner]");
+        if (dismissBannerBtn) {
+            dismissBannerBtn.onclick = () => {
+                this.lastImportInfo = null;
+                this.render();
+            };
+        }
 
         const nameInput = mainEl.querySelector("[data-edit-name]");
         nameInput.addEventListener("input", () => {
@@ -925,6 +1134,7 @@ export class AnimaSetStudioModal {
                 `;
 
                 row.querySelector("[data-select]").onclick = () => {
+                    this.lastImportInfo = null;
                     this.editingSet = deepClone(setItem);
                     this.render();
                 };

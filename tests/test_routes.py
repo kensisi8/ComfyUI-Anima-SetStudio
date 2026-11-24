@@ -1,8 +1,23 @@
+import base64
+import json
+import struct
 import tempfile
 import unittest
+import zlib
 
 from backend.routes import handle_api_action
 from backend.storage import SetStorage
+
+
+def _make_simple_prompt_png(prompt_graph: dict) -> bytes:
+    def _chunk(ctype: bytes, data: bytes) -> bytes:
+        crc = zlib.crc32(ctype + data) & 0xFFFFFFFF
+        return struct.pack(">I", len(data)) + ctype + data + struct.pack(">I", crc)
+
+    ihdr = struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+    idat = zlib.compress(b"\x00\x00\x00\x00")
+    txt = b"prompt\x00" + json.dumps(prompt_graph, ensure_ascii=False).encode("utf-8")
+    return b"\x89PNG\r\n\x1a\n" + _chunk(b"IHDR", ihdr) + _chunk(b"tEXt", txt) + _chunk(b"IDAT", idat) + _chunk(b"IEND", b"")
 
 
 class TestApiRoutes(unittest.TestCase):
@@ -85,6 +100,48 @@ class TestApiRoutes(unittest.TestCase):
         status, not_found = handle_api_action(self.storage, "delete_set", set_id="set_nonexistent")
         self.assertEqual(status, 404)
         self.assertFalse(not_found["success"])
+
+    def test_import_image_route_action(self):
+        png_bytes = _make_simple_prompt_png(
+            {
+                "1": {
+                    "class_type": "AnimaMultiLoraLoader",
+                    "inputs": {
+                        "lora_list_json": json.dumps(
+                            [{"name": "demo_style.safetensors", "strength_model": 0.8, "enabled": True}]
+                        )
+                    },
+                },
+                "2": {
+                    "class_type": "AnimaPromptPlusClipEncode",
+                    "inputs": {
+                        "prompt_boxes": json.dumps(
+                            [{"id": "b1", "label": "衣装", "text": "maid dress,", "disabled": False}]
+                        ),
+                        "separator": ", ",
+                    },
+                },
+                "3": {"class_type": "KSampler", "inputs": {"model": ["1", 0], "positive": ["2", 0]}},
+            }
+        )
+        b64 = base64.b64encode(png_bytes).decode("ascii")
+        status, res = handle_api_action(
+            self.storage,
+            "import_image",
+            payload={"image_base64": f"data:image/png;base64,{b64}", "filename": "maid_sample.png"},
+            options_provider=lambda: {"loras": ["styles/demo_style.safetensors"]},
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(res["success"])
+        imported = res["imported"]
+        self.assertEqual(imported["suggested_name"], "maid_sample")
+        self.assertEqual(imported["loras"][0]["name"], "styles/demo_style.safetensors")
+        self.assertEqual(imported["prompt_boxes"][0]["label"], "衣装")
+
+        # Empty payload returns 400
+        status_err, body_err = handle_api_action(self.storage, "import_image", payload={})
+        self.assertEqual(status_err, 400)
+        self.assertFalse(body_err["success"])
 
 
 if __name__ == "__main__":

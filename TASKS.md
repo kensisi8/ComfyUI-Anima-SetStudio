@@ -57,3 +57,17 @@
 
 - [x] **Task 8: Colabノートブック (`../ComfyUI_Anima_Colab.ipynb`) への自動セットアップ組み込み**
   - GitHub URL（`SET_STUDIO_REPO_URL`）からの自動 `git clone` / `pull` および Googleドライブ配置フォルダからの読み込みに対応し、JSON/AST構文検証を完了。
+
+---
+
+## フェーズ4：画像からのセット読み取り機能
+- [x] **Task 9: 画像メタデータ解析エンジン＆API (`backend/image_importer.py`, `backend/routes.py`)**
+  - PNG (`tEXt`/`iTXt`/`zTXt`)・WebP・JPEG から ComfyUI `prompt` / `workflow` および A1111 `parameters` をゼロ外部依存で抽出。
+  - `KSampler` からのグラフ逆追跡により、`AnimaPromptPlus` / `AnimaPromptPlusClipEncode` / `Anima*Selector` / `CLIPTextEncode` のカテゴリ別プロンプトと、`AnimaMultiLoraLoader` / `LoraLoader` / `LoraLoaderModelOnly` / `Power Lora Loader` / `<lora:...>` の LoRAリストを抽出。
+  - 単一テキストプロンプト時の自動カテゴリ仕分け（＋1枠保持データ返却）とローカル LoRA パス照合を実装。
+  - `POST /anima-set-studio/api/import-image` を登録し、`tests/test_image_importer.py` と `tests/test_routes.py` で単体テストを全パス確認。
+
+- [x] **Task 10: セット管理画面への画像インポートUI追加 (`js/api.js`, `js/views/studio_modal.js`, `js/styles.js`, `README.md`)**
+  - セット管理タブに「🖼️ 画像から読み込む」ドロップゾーン＆ファイル選択ボタンを追加（新規セットとして読込／編集中セットへ反映に対応）。
+  - 読込結果バナー（復元元種別・LoRA件数・カテゴリ件数・自動仕分け⇔1枠切替ボタン）を実装。
+  - `node --check`・全 `unittest`・機密チェックを実行して完了確認。

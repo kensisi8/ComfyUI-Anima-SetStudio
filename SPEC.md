@@ -23,6 +23,16 @@
   2. **カテゴリ別プロンプト**（`Anima Prompt Plus` 完全互換）
      - 複数テキスト枠の追加（`+ Add Text Box`）、カテゴリ名クリック編集、ドラッグ並び替え、一時無効化（`ban`）、実行時ランダム設定（`shuffle`）、クリア、コピー、削除、区切り文字（`separator`）
      - **`Select` ポップアップ連携**: 本家 `Comfyui-Anima-Tools` の `openBoxSelector`（画師・キャラ・衣装・ポーズ・背景・コミュニティTag庫・`My Tags`）をそのまま開いて選択可能。
+  3. **画像からのセット読み取り（インポート）**
+     - セット管理タブで PNG / WebP / JPEG 画像を選択またはドラッグ＆ドロップすると、画像に埋め込まれた生成メタデータから **カテゴリ別プロンプト** と **LoRAリスト** を自動抽出してセット編集欄へ取り込める。
+     - **ComfyUI 画像（`prompt` / `workflow` チャンク）**:
+       - `KSampler` 等の `positive` / `model` 入力から実行ルートを逆追跡し、実際に使用されたプロンプトとLoRAのみを抽出する（未接続の別ノードを誤検出しない）。
+       - `AnimaPromptPlus` / `AnimaPromptPlusClipEncode` がある場合は `prompt_boxes`（カテゴリ名・本文・無効状態・ランダム設定・picks）と `separator` をそのまま完全復元する。
+       - `Anima*Selector`（画師・キャラ・衣装・ポーズ・背景）チェーンがある場合は各ノード種別ごとのカテゴリ枠として復元する。
+       - `AnimaMultiLoraLoader`（`lora_list_json`）、`LoraLoader` / `LoraLoaderModelOnly`、`Power Lora Loader (rgthree)` から LoRA・強度・ON/OFF を復元する。
+     - **単一テキストプロンプト画像（`CLIPTextEncode` や A1111 `parameters` 形式）**:
+       - `<lora:name:weight>` 記法があれば LoRAリストへ分離抽出する。
+       - タグをルールベースでカテゴリ別（`品質`, `画師`, `キャラ`, `体格`, `衣装`, `ポーズ`, `背景`, `その他`）へ自動仕分けして読み込み、必要に応じて「1枠のまま」とワンクリック切替できる。
 
 #### B. イラスト集作成＆一括生成（やりたいこと2）
 ComfyUI画面内の起動ボタン（フローティングボタン／サイドバー）から大きく見やすい専用画面を開き、以下の5ステップで操作できる。
@@ -90,6 +100,7 @@ ComfyUI-Anima-SetStudio/
 │   ├── __init__.py
 │   ├── storage.py          # セットJSON・ワークスペース状態の永続化（ComfyUI/user/anima_set_studio/）
 │   ├── composer.py         # カテゴリ除外・プロンプト合成(案B)・LoRA合体・APIワークフローJSON生成
+│   ├── image_importer.py   # PNG/WebP/JPEGメタデータ解析・カテゴリ別プロンプト＆LoRA抽出
 │   └── routes.py           # PromptServer HTTP API (`/anima-set-studio/api/...`)
 ├── js/
 │   ├── index.js            # ComfyUI拡張登録・起動ボタン・パネル開閉
@@ -104,8 +115,10 @@ ComfyUI-Anima-SetStudio/
 │   │   └── set_card.js     # 呼び出し済みセットの一時編集カード
 │   └── styles.js           # ComfyUIテーマ追従CSS
 └── tests/
-    ├── test_storage.py     # 保存・読込・複製・削除・パストラバーサル防止テスト
-    └── test_composer.py    # 除外カテゴリ・案B結合・LoRA合体・ワークフロー生成テスト
+    ├── test_storage.py        # 保存・読込・複製・削除・パストラバーサル防止テスト
+    ├── test_composer.py       # 除外カテゴリ・案B結合・LoRA合体・ワークフロー生成テスト
+    ├── test_image_importer.py # PNG/WebP/JPEGメタデータ解析・カテゴリ別プロンプト＆LoRA抽出テスト
+    └── test_routes.py         # HTTP APIディスパッチャ・画像インポートルートテスト
 ```
 
 ---
@@ -167,3 +180,4 @@ ComfyUI-Anima-SetStudio/
 - `GET /state` / `POST /state`: 共通セクション＆ワークスペース状態の取得・保存
 - `GET /options`: 利用可能な拡散モデル・CLIP・VAE・サンプラー・スケジューラ・`Comfyui-Anima-Tools` 導入有無の一覧取得
 - `POST /build-jobs`: 共通設定＋呼び出し済みセット群＋除外カテゴリから、ComfyUI `/prompt` 投入用のAPIワークフローJSON配列を生成して返す（または直接キュー投入）
+- `POST /import-image`: アップロードされた画像（`multipart/form-data` または Base64 JSON）のメタデータからカテゴリ別プロンプト (`prompt_boxes`) と LoRAリスト (`loras`) を抽出して返す
