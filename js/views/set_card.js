@@ -1,4 +1,13 @@
 import { getSetThumbnailUrl } from "../api.js";
+import {
+    ASPECT_RATIO_PRESETS,
+    DEFAULT_ASPECT_RATIO,
+    DEFAULT_BASE_RESOLUTION,
+    formatSetResolutionBadge,
+    isPresetAspectRatio,
+    normalizeAspectRatio,
+    parseAspectRatioParts,
+} from "../aspect_ratio.js";
 import { renderLoraListEditor } from "../components/lora_list.js";
 import { renderPromptBoxesEditor } from "../components/prompt_boxes.js";
 
@@ -21,6 +30,8 @@ export function createSelectedSetCard(item, options) {
         index,
         total,
         defaultImagesPerSet = 1,
+        baseResolution = DEFAULT_BASE_RESOLUTION,
+        defaultAspectRatio = DEFAULT_ASPECT_RATIO,
         excludedCategories = [],
         availableLoras = [],
         collapsed = false,
@@ -37,6 +48,10 @@ export function createSelectedSetCard(item, options) {
     const countPlaceholder = String(defaultImagesPerSet || 1);
     const activeLoraCount = (item.loras || []).filter((l) => l.enabled !== false).length;
     const thumbUrl = getSetThumbnailUrl(item.thumbnail);
+    const currentRatio = normalizeAspectRatio(item.aspect_ratio, true);
+    const isCustomRatio = Boolean(currentRatio) && !isPresetAspectRatio(currentRatio);
+    const [customW, customH] = isCustomRatio ? parseAspectRatioParts(currentRatio) : [4, 5];
+    const ratioBadgeText = formatSetResolutionBadge(baseResolution, currentRatio, defaultAspectRatio);
 
     const card = document.createElement("div");
     card.className = `ass-set-card ${enabled ? "" : "is-muted"} ${collapsed ? "is-collapsed" : ""}`;
@@ -52,6 +67,7 @@ export function createSelectedSetCard(item, options) {
                 ${thumbUrl ? `<img class="ass-set-mini-thumb" src="${escapeHtml(thumbUrl)}" alt="" loading="lazy" />` : ""}
                 <span class="ass-set-card-name">${escapeHtml(item.name || "無題セット")}</span>
                 <span class="ass-badge-soft">LoRA ${activeLoraCount}</span>
+                <span class="ass-badge-ratio" data-ratio-badge>${escapeHtml(ratioBadgeText)}</span>
             </button>
             <div class="ass-set-card-actions">
                 <label class="ass-count-override" title="空欄なら共通の生成枚数を使用">
@@ -65,14 +81,31 @@ export function createSelectedSetCard(item, options) {
                 <button type="button" class="ass-btn-xs ass-btn-danger" data-remove title="リストから外す">✕</button>
             </div>
         </div>
-        <div class="ass-set-card-body" ${collapsed ? "hidden" : ""}>
-            <div class="ass-set-card-col">
-                <div class="ass-sub-heading">LoRA（一時編集可）</div>
-                <div data-lora-slot></div>
+        <div class="ass-set-card-body-wrap" ${collapsed ? "hidden" : ""}>
+            <div class="ass-card-ratio-bar">
+                <span class="ass-sub-heading">アスペクト比（一時編集可）</span>
+                <select class="ass-select ass-ratio-select-sm" data-card-ratio-select>
+                    <option value="" ${!currentRatio ? "selected" : ""}>共通設定のまま (${escapeHtml(defaultAspectRatio)})</option>
+                    ${ASPECT_RATIO_PRESETS.map(
+                        (p) => `<option value="${p.value}" ${currentRatio === p.value ? "selected" : ""}>${escapeHtml(p.label)}</option>`,
+                    ).join("")}
+                    <option value="__custom__" ${isCustomRatio ? "selected" : ""}>カスタム比率...</option>
+                </select>
+                <span class="ass-ratio-custom-wrap" data-card-ratio-custom ${isCustomRatio ? "" : "hidden"}>
+                    <input type="number" class="ass-input ass-ratio-num" data-card-ratio-w min="1" max="100" step="any" value="${escapeHtml(customW)}" />
+                    <span class="ass-muted">:</span>
+                    <input type="number" class="ass-input ass-ratio-num" data-card-ratio-h min="1" max="100" step="any" value="${escapeHtml(customH)}" />
+                </span>
             </div>
-            <div class="ass-set-card-col ass-set-card-col-prompt">
-                <div class="ass-sub-heading">プロンプト（一時編集可）</div>
-                <div data-prompt-slot></div>
+            <div class="ass-set-card-body">
+                <div class="ass-set-card-col">
+                    <div class="ass-sub-heading">LoRA（一時編集可）</div>
+                    <div data-lora-slot></div>
+                </div>
+                <div class="ass-set-card-col ass-set-card-col-prompt">
+                    <div class="ass-sub-heading">プロンプト（一時編集可）</div>
+                    <div data-prompt-slot></div>
+                </div>
             </div>
         </div>
     `;
@@ -111,6 +144,40 @@ export function createSelectedSetCard(item, options) {
     card.querySelector("[data-save-as-new]").onclick = () => onSaveAsNew(item);
 
     if (!collapsed) {
+        const ratioSelect = card.querySelector("[data-card-ratio-select]");
+        const customWrap = card.querySelector("[data-card-ratio-custom]");
+        const customWInput = card.querySelector("[data-card-ratio-w]");
+        const customHInput = card.querySelector("[data-card-ratio-h]");
+        const ratioBadgeEl = card.querySelector("[data-ratio-badge]");
+
+        const updateCardRatio = (nextRatio) => {
+            item.aspect_ratio = normalizeAspectRatio(nextRatio, true);
+            if (ratioBadgeEl) {
+                ratioBadgeEl.textContent = formatSetResolutionBadge(baseResolution, item.aspect_ratio, defaultAspectRatio);
+            }
+            onChange();
+        };
+
+        const applyCustomCardRatio = () => {
+            const norm = normalizeAspectRatio(`${customWInput.value}:${customHInput.value}`, true);
+            if (norm) updateCardRatio(norm);
+        };
+
+        ratioSelect.onchange = () => {
+            const val = ratioSelect.value;
+            if (val === "__custom__") {
+                customWrap.hidden = false;
+                applyCustomCardRatio();
+            } else {
+                customWrap.hidden = true;
+                updateCardRatio(val);
+            }
+        };
+        for (const inp of [customWInput, customHInput]) {
+            inp.addEventListener("input", applyCustomCardRatio);
+            inp.addEventListener("keydown", (e) => e.stopPropagation());
+        }
+
         renderLoraListEditor(card.querySelector("[data-lora-slot]"), {
             loras: item.loras || [],
             availableLoras,

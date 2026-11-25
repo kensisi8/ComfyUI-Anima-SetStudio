@@ -2,7 +2,13 @@ import os
 import tempfile
 import unittest
 
-from backend.storage import SetStorage, validate_id
+from backend.storage import (
+    SetStorage,
+    compute_dimensions_for_aspect_ratio,
+    detect_aspect_ratio_from_size,
+    normalize_aspect_ratio,
+    validate_id,
+)
 
 
 class TestSetStorage(unittest.TestCase):
@@ -165,6 +171,44 @@ class TestSetStorage(unittest.TestCase):
         # Path traversal in thumbnail lookup is rejected
         with self.assertRaises(ValueError):
             self.storage.get_thumbnail_path("../secret.webp")
+
+    def test_aspect_ratio_and_base_resolution_helpers(self):
+        self.assertEqual(normalize_aspect_ratio("16:9"), "16:9")
+        self.assertEqual(normalize_aspect_ratio("3/2"), "3:2")
+        self.assertEqual(normalize_aspect_ratio("common"), "")
+        self.assertEqual(normalize_aspect_ratio("invalid", allow_empty=False), "2:3")
+
+        self.assertEqual(compute_dimensions_for_aspect_ratio(1024, "1:1"), (1024, 1024))
+        self.assertEqual(compute_dimensions_for_aspect_ratio(1024, "2:3"), (832, 1248))
+        self.assertEqual(compute_dimensions_for_aspect_ratio(1024, "3:2"), (1248, 832))
+        self.assertEqual(compute_dimensions_for_aspect_ratio(1024, "16:9"), (1360, 768))
+        self.assertEqual(compute_dimensions_for_aspect_ratio(768, "1:1"), (768, 768))
+
+        self.assertEqual(detect_aspect_ratio_from_size(832, 1216), "2:3")
+        self.assertEqual(detect_aspect_ratio_from_size(1344, 768), "16:9")
+        self.assertEqual(detect_aspect_ratio_from_size(1024, 1024), "1:1")
+
+        saved_set = self.storage.save_set({"name": "横長セット", "aspect_ratio": "16:9"})
+        self.assertEqual(saved_set["aspect_ratio"], "16:9")
+        reloaded_set = self.storage.get_set(saved_set["id"])
+        self.assertEqual(reloaded_set["aspect_ratio"], "16:9")
+
+        saved_state = self.storage.save_state(
+            {
+                "settings": {"base_resolution": 1216, "default_aspect_ratio": "3:4"},
+                "selected_sets": [
+                    {
+                        "instance_id": "inst_r1",
+                        "name": "横長セット",
+                        "aspect_ratio": "16:9",
+                        "prompt_boxes": [{"id": "b1", "label": "背景", "text": "sky", "disabled": False}],
+                    }
+                ],
+            }
+        )
+        self.assertEqual(saved_state["settings"]["base_resolution"], 1216)
+        self.assertEqual(saved_state["settings"]["default_aspect_ratio"], "3:4")
+        self.assertEqual(saved_state["selected_sets"][0]["aspect_ratio"], "16:9")
 
 
 if __name__ == "__main__":

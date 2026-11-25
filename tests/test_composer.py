@@ -198,6 +198,58 @@ class TestComposer(unittest.TestCase):
         )
         self.assertEqual([j["seed"] for j in rand_jobs], [11, 22, 33])
 
+    def test_per_set_aspect_ratio_scales_with_base_resolution(self):
+        payload = {
+            "common_prompt_boxes": [{"id": "c1", "label": "品質", "text": "masterpiece,", "disabled": False}],
+            "settings": {
+                "base_resolution": 1024,
+                "default_aspect_ratio": "2:3",
+                "images_per_set": 1,
+            },
+            "selected_sets": [
+                {
+                    "instance_id": "i_common",
+                    "name": "共通比セット",
+                    "aspect_ratio": "",
+                    "enabled": True,
+                    "prompt_boxes": [{"id": "p1", "label": "衣装", "text": "dress,", "disabled": False}],
+                },
+                {
+                    "instance_id": "i_wide",
+                    "name": "横長セット",
+                    "aspect_ratio": "16:9",
+                    "enabled": True,
+                    "prompt_boxes": [{"id": "p2", "label": "背景", "text": "landscape,", "disabled": False}],
+                },
+                {
+                    "instance_id": "i_square",
+                    "name": "正方形セット",
+                    "aspect_ratio": "1:1",
+                    "enabled": True,
+                    "prompt_boxes": [{"id": "p3", "label": "キャラ", "text": "portrait,", "disabled": False}],
+                },
+            ],
+        }
+        jobs = build_batch_jobs(payload, seed_fn=lambda: 42)
+        self.assertEqual([(j["aspect_ratio"], j["width"], j["height"]) for j in jobs], [
+            ("2:3", 832, 1248),
+            ("16:9", 1360, 768),
+            ("1:1", 1024, 1024),
+        ])
+        self.assertEqual(jobs[1]["prompt"]["8"]["inputs"]["width"], 1360)
+        self.assertEqual(jobs[1]["prompt"]["8"]["inputs"]["height"], 768)
+
+        # Switching collection base_resolution to 768 (draft) scales all sets uniformly
+        draft_jobs = build_batch_jobs(
+            {**payload, "settings": {"base_resolution": 768, "default_aspect_ratio": "2:3", "images_per_set": 1}},
+            seed_fn=lambda: 42,
+        )
+        self.assertEqual([(j["width"], j["height"]) for j in draft_jobs], [
+            (624, 944),
+            (1024, 576),
+            (768, 768),
+        ])
+
     def test_empty_selection_raises(self):
         with self.assertRaises(ValueError):
             build_batch_jobs({"selected_sets": []})

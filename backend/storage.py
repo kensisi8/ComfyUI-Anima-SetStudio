@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import io
 import json
+import math
 import os
 import re
 import secrets
@@ -14,12 +15,27 @@ from typing import Any
 
 SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
 SAFE_THUMB_FILENAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,80}\.(?:webp|jpg|jpeg)$")
+ASPECT_RATIO_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*[:/x×]\s*(\d+(?:\.\d+)?)\s*$")
 MAX_THUMB_DIMENSION = 320
 DEFAULT_THUMB_WEBP_QUALITY = 75
 DEFAULT_THUMB_JPEG_QUALITY = 78
 MAX_THUMB_UPLOAD_BYTES = 20 * 1024 * 1024  # Raw upload ceiling before downscale
 MAX_SEED_VALUE = 2**53 - 1
 VALID_SEED_MODES = ("randomize", "fixed", "increment", "decrement")
+DEFAULT_BASE_RESOLUTION = 1024
+DEFAULT_ASPECT_RATIO = "2:3"
+MIN_BASE_RESOLUTION = 512
+MAX_BASE_RESOLUTION = 2048
+ASPECT_RATIO_PRESETS: tuple[tuple[str, float], ...] = (
+    ("2:3", 2 / 3),
+    ("3:4", 3 / 4),
+    ("4:5", 4 / 5),
+    ("9:16", 9 / 16),
+    ("1:1", 1.0),
+    ("4:3", 4 / 3),
+    ("3:2", 3 / 2),
+    ("16:9", 16 / 9),
+)
 
 LORA_OPTIONAL_STR_KEYS = (
     "display_name",
@@ -47,8 +63,10 @@ DEFAULT_GENERATION_SETTINGS: dict[str, Any] = {
     "denoise": 1.0,
     "seed_mode": "randomize",
     "seed": 0,
+    "base_resolution": DEFAULT_BASE_RESOLUTION,
+    "default_aspect_ratio": DEFAULT_ASPECT_RATIO,
     "width": 832,
-    "height": 1216,
+    "height": 1248,
     "images_per_set": 1,
     "filename_prefix": "%date:yyyyMMdd%/%date:yyyyMMdd%",
 }
@@ -69,6 +87,96 @@ def validate_id(raw_id: Any) -> str:
     if not SAFE_ID_RE.match(value):
         raise ValueError(f"Invalid set ID: {raw_id!r}")
     return value
+
+
+def _format_ratio_part(val: float) -> str:
+    rounded = round(val, 2)
+    if abs(rounded - round(rounded)) < 1e-6:
+        return str(int(round(rounded)))
+    return f"{rounded:.2f}".rstrip("0").rstrip(".")
+
+
+def normalize_aspect_ratio(raw_ratio: Any, *, allow_empty: bool = True) -> str:
+    """Normalize an aspect ratio string like '2:3', '16:9', or '' (inherit common)."""
+    text = str(raw_ratio or "").strip()
+    if not text or text.lower() in ("common", "default", "auto", "inherit"):
+        return "" if allow_empty else DEFAULT_ASPECT_RATIO
+    match = ASPECT_RATIO_RE.match(text)
+    if not match:
+        return "" if allow_empty else DEFAULT_ASPECT_RATIO
+    try:
+        w = float(match.group(1))
+        h = float(match.group(2))
+    except ValueError:
+        return "" if allow_empty else DEFAULT_ASPECT_RATIO
+    if not (math.isfinite(w) and math.isfinite(h)) or w <= 0 or h <= 0:
+        return "" if allow_empty else DEFAULT_ASPECT_RATIO
+    ratio = w / h
+    if ratio < 0.2 or ratio > 5.0:
+        return "" if allow_empty else DEFAULT_ASPECT_RATIO
+    return f"{_format_ratio_part(w)}:{_format_ratio_part(h)}"
+
+
+def parse_aspect_ratio_pair(raw_ratio: Any, *, fallback: str = DEFAULT_ASPECT_RATIO) -> tuple[float, float]:
+    norm = normalize_aspect_ratio(raw_ratio, allow_empty=False) or fallback
+    match = ASPECT_RATIO_RE.match(norm)
+    if not match:
+        return (2.0, 3.0)
+    return (float(match.group(1)), float(match.group(2)))
+
+
+def _round_to_step(val: float, step: int = 16, min_v: int = 64, max_v: int = 4096) -> int:
+    snapped = int(round(val / step)) * step
+    return max(min_v, min(max_v, snapped))
+
+
+def compute_dimensions_for_aspect_ratio(
+    base_resolution: Any,
+    aspect_ratio: Any,
+    *,
+    fallback_ratio: str = DEFAULT_ASPECT_RATIO,
+    step: int = 16,
+) -> tuple[int, int]:
+    """Compute (width, height) keeping pixel area ~= base_resolution^2 for the given aspect ratio."""
+    try:
+        base = int(round(float(base_resolution)))
+    except (TypeError, ValueError):
+        base = DEFAULT_BASE_RESOLUTION
+    base = max(MIN_BASE_RESOLUTION, min(MAX_BASE_RESOLUTION, base))
+
+    rw, rh = parse_aspect_ratio_pair(aspect_ratio or fallback_ratio, fallback=fallback_ratio)
+    area = float(base) * float(base)
+    raw_w = math.sqrt(area * (rw / rh))
+    raw_h = math.sqrt(area * (rh / rw))
+    return (_round_to_step(raw_w, step=step), _round_to_step(raw_h, step=step))
+
+
+def detect_aspect_ratio_from_size(width: int, height: int) -> str:
+    """Map concrete image dimensions (e.g. 832x1216) to a preset or simplified W:H ratio."""
+    if width <= 0 or height <= 0:
+        return ""
+    target = width / height
+    best_preset = ""
+    best_rel_err = 1.0
+    for label, preset_val in ASPECT_RATIO_PRESETS:
+        rel_err = abs(target - preset_val) / preset_val
+        if rel_err < best_rel_err:
+            best_rel_err = rel_err
+            best_preset = label
+    if best_preset and best_rel_err <= 0.04:
+        return best_preset
+
+    divisor = math.gcd(int(width), int(height)) or 1
+    sw = int(width) // divisor
+    sh = int(height) // divisor
+    if sw <= 32 and sh <= 32:
+        return normalize_aspect_ratio(f"{sw}:{sh}", allow_empty=True)
+    # Approximate with clean small integers when GCD leaves large numbers
+    scale = 10.0 / min(width, height)
+    aw = max(1, int(round(width * scale)))
+    ah = max(1, int(round(height * scale)))
+    g2 = math.gcd(aw, ah) or 1
+    return normalize_aspect_ratio(f"{aw // g2}:{ah // g2}", allow_empty=True)
 
 
 def sanitize_thumbnail_name(raw_name: Any) -> str:
@@ -313,8 +421,52 @@ def normalize_settings(raw: Any) -> dict[str, Any]:
     merged["steps"] = _to_int(data.get("steps"), DEFAULT_GENERATION_SETTINGS["steps"], 1, 200)
     merged["cfg"] = _to_float(data.get("cfg"), DEFAULT_GENERATION_SETTINGS["cfg"], 0.0, 30.0)
     merged["denoise"] = _to_float(data.get("denoise"), DEFAULT_GENERATION_SETTINGS["denoise"], 0.0, 1.0)
-    merged["width"] = _to_int(data.get("width"), DEFAULT_GENERATION_SETTINGS["width"], 64, 4096)
-    merged["height"] = _to_int(data.get("height"), DEFAULT_GENERATION_SETTINGS["height"], 64, 4096)
+
+    has_explicit_base = data.get("base_resolution") not in (None, "")
+    has_explicit_ratio = data.get("default_aspect_ratio") not in (None, "")
+    has_explicit_wh = data.get("width") not in (None, "") or data.get("height") not in (None, "")
+
+    merged["default_aspect_ratio"] = normalize_aspect_ratio(
+        data.get("default_aspect_ratio"),
+        allow_empty=False,
+    )
+
+    if has_explicit_base:
+        merged["base_resolution"] = _to_int(
+            data.get("base_resolution"),
+            DEFAULT_BASE_RESOLUTION,
+            MIN_BASE_RESOLUTION,
+            MAX_BASE_RESOLUTION,
+        )
+        comp_w, comp_h = compute_dimensions_for_aspect_ratio(
+            merged["base_resolution"],
+            merged["default_aspect_ratio"],
+        )
+        merged["width"] = comp_w
+        merged["height"] = comp_h
+    elif has_explicit_wh:
+        merged["width"] = _to_int(data.get("width"), DEFAULT_GENERATION_SETTINGS["width"], 64, 4096)
+        merged["height"] = _to_int(data.get("height"), DEFAULT_GENERATION_SETTINGS["height"], 64, 4096)
+        derived_base = _round_to_step(
+            math.sqrt(merged["width"] * merged["height"]),
+            step=16,
+            min_v=MIN_BASE_RESOLUTION,
+            max_v=MAX_BASE_RESOLUTION,
+        )
+        merged["base_resolution"] = derived_base
+        if not has_explicit_ratio:
+            detected = detect_aspect_ratio_from_size(merged["width"], merged["height"])
+            if detected:
+                merged["default_aspect_ratio"] = detected
+    else:
+        merged["base_resolution"] = DEFAULT_BASE_RESOLUTION
+        comp_w, comp_h = compute_dimensions_for_aspect_ratio(
+            merged["base_resolution"],
+            merged["default_aspect_ratio"],
+        )
+        merged["width"] = comp_w
+        merged["height"] = comp_h
+
     merged["images_per_set"] = _to_int(
         data.get("images_per_set"), DEFAULT_GENERATION_SETTINGS["images_per_set"], 1, 100
     )
@@ -578,6 +730,7 @@ class SetStorage:
             "id": forced_id,
             "name": str(raw.get("name") or "名称未設定セット").strip() or "名称未設定セット",
             "thumbnail": sanitize_thumbnail_name(raw.get("thumbnail")),
+            "aspect_ratio": normalize_aspect_ratio(raw.get("aspect_ratio"), allow_empty=True),
             "separator": str(separator),
             "loras": normalize_lora_list(raw.get("loras")),
             "prompt_boxes": normalize_prompt_boxes(raw.get("prompt_boxes"), ensure_non_empty=True),
@@ -631,6 +784,7 @@ class SetStorage:
                         "source_set_id": source_id,
                         "name": name,
                         "thumbnail": sanitize_thumbnail_name(entry.get("thumbnail")),
+                        "aspect_ratio": normalize_aspect_ratio(entry.get("aspect_ratio"), allow_empty=True),
                         "enabled": entry.get("enabled") is not False,
                         "images_count": parsed_override,
                         "separator": str(entry.get("separator")) if entry.get("separator") is not None else ", ",

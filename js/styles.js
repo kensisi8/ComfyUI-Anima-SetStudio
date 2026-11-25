@@ -1112,6 +1112,74 @@ const CSS = `
     flex: none;
     border: 1px solid var(--ass-line);
 }
+
+/* Aspect Ratio Controls & Badges */
+.ass-badge-group {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    flex: none;
+}
+.ass-badge-ratio {
+    display: inline-flex;
+    align-items: center;
+    padding: 1px 6px;
+    border-radius: 999px;
+    font-size: 10.5px;
+    font-weight: 600;
+    color: var(--ass-accent);
+    background: color-mix(in srgb, var(--ass-accent) 14%, transparent);
+    border: 1px solid color-mix(in srgb, var(--ass-accent) 32%, transparent);
+    white-space: nowrap;
+}
+.ass-chip-btn.is-active {
+    border-color: var(--ass-accent);
+    background: color-mix(in srgb, var(--ass-accent) 22%, transparent);
+    color: var(--ass-text);
+    font-weight: 600;
+}
+.ass-ratio-editor-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 7px;
+    margin-top: 6px;
+}
+.ass-label-inline {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--ass-muted);
+}
+.ass-ratio-select-sm {
+    width: auto;
+    min-width: 138px;
+    padding: 4px 8px;
+    font-size: 11.5px;
+}
+.ass-ratio-custom-wrap {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+.ass-ratio-custom-wrap[hidden] {
+    display: none;
+}
+.ass-ratio-num {
+    width: 56px;
+    padding: 4px 6px;
+    font-size: 11.5px;
+    text-align: center;
+}
+.ass-set-card-body-wrap[hidden] {
+    display: none;
+}
+.ass-card-ratio-bar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 8px 12px 0;
+}
 `;
 
 export function injectStudioStyles() {

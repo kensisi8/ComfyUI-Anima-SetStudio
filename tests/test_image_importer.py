@@ -18,8 +18,10 @@ def _png_chunk(chunk_type: bytes, data: bytes) -> bytes:
 def _build_test_png(
     text_chunks: dict[str, str] | None = None,
     itxt_compressed: dict[str, str] | None = None,
+    width: int = 1,
+    height: int = 1,
 ) -> bytes:
-    ihdr = struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
     idat = zlib.compress(b"\x00\x00\x00\x00")
     parts = [b"\x89PNG\r\n\x1a\n", _png_chunk(b"IHDR", ihdr)]
     for key, val in (text_chunks or {}).items():
@@ -291,6 +293,17 @@ class TestImageImporter(unittest.TestCase):
         self.assertIn("(blue eyes:1.2)", by_label["キャラ"])
         self.assertIn("(school uniform, pleated skirt:1.1)", by_label["衣装"])
         self.assertIn("sunset", by_label["背景"])
+
+    def test_detects_aspect_ratio_from_imported_png_dimensions(self):
+        prompt_graph = {
+            "1": {"class_type": "CLIPTextEncode", "inputs": {"text": "masterpiece, landscape, sunset"}},
+            "2": {"class_type": "KSampler", "inputs": {"positive": ["1", 0]}},
+        }
+        wide_png = _build_test_png(text_chunks={"prompt": json.dumps(prompt_graph)}, width=1344, height=768)
+        imported = import_set_from_image_bytes(wide_png, filename="wide_scene.png")
+        self.assertEqual(imported["image_width"], 1344)
+        self.assertEqual(imported["image_height"], 768)
+        self.assertEqual(imported["aspect_ratio"], "16:9")
 
 
 if __name__ == "__main__":

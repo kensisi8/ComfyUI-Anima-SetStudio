@@ -12,6 +12,17 @@ import {
     saveState,
     uploadSetThumbnail,
 } from "../api.js";
+import {
+    ASPECT_RATIO_PRESETS,
+    DEFAULT_ASPECT_RATIO,
+    DEFAULT_BASE_RESOLUTION,
+    computeDimensionsForAspectRatio,
+    formatSetResolutionBadge,
+    isPresetAspectRatio,
+    normalizeAspectRatio,
+    normalizeBaseResolution,
+    parseAspectRatioParts,
+} from "../aspect_ratio.js";
 import { configureAnimaToolsBridge } from "../bridge_anima_tools.js";
 import { renderLoraListEditor } from "../components/lora_list.js";
 import {
@@ -48,6 +59,7 @@ function makeInstanceFromSet(setRecord) {
         source_set_id: setRecord.id || "",
         name: setRecord.name || "無題セット",
         thumbnail: setRecord.thumbnail || "",
+        aspect_ratio: setRecord.aspect_ratio || "",
         enabled: true,
         images_count: null,
         separator: setRecord.separator ?? ", ",
@@ -164,20 +176,7 @@ export class AnimaSetStudioModal {
         overlay.id = "anima-set-studio-overlay";
         overlay.className = "ass-overlay";
         overlay.tabIndex = -1;
-        window.addEventListener("keydown", (e) => {
-            if (!this.isOpen || e.key !== "Escape") return;
-            // Only close if no Anima-Tools popup or submodal is open above us
-            const topPopup = document.querySelector(
-                ".anima-sel-overlay, .alm-overlay.show, .alm-selector-overlay.show, #ass-set-picker-modal, #ass-fallback-lora-modal, .ass-random-menu",
-            );
-            if (!topPopup) {
-                e.stopPropagation();
-                this.close();
-            }
-        });
-        overlay.addEventListener("click", (e) => {
-            if (e.target === overlay) this.close();
-        });
+        // Close ONLY via the explicit ✕ button (do not close on backdrop click or Esc)
         document.body.appendChild(overlay);
         this.overlay = overlay;
     }
@@ -213,9 +212,10 @@ export class AnimaSetStudioModal {
         const runBtn = this.overlay?.querySelector("[data-run-btn]");
         if (!summaryEl || !runBtn) return;
         const { activeSets, totalImages } = this.computeBatchStats();
-        const w = this.state?.settings?.width || 832;
-        const h = this.state?.settings?.height || 1216;
-        summaryEl.textContent = `有効セット: ${activeSets}件 / 合計生成枚数: ${totalImages}枚 (${w}×${h})`;
+        const baseRes = normalizeBaseResolution(this.state?.settings?.base_resolution ?? DEFAULT_BASE_RESOLUTION);
+        const defRatio = normalizeAspectRatio(this.state?.settings?.default_aspect_ratio, false) || DEFAULT_ASPECT_RATIO;
+        const { megapixels } = computeDimensionsForAspectRatio(baseRes, defRatio);
+        summaryEl.textContent = `有効セット: ${activeSets}件 / 合計生成枚数: ${totalImages}枚 (基準 ${baseRes}px · 約${megapixels}MP)`;
         if (!this.isExecuting) {
             runBtn.disabled = activeSets === 0;
             runBtn.textContent = activeSets > 0 ? `▶ 実行（全 ${totalImages} 枚をまとめて生成）` : "▶ 実行（セットを追加してください）";
@@ -240,7 +240,7 @@ export class AnimaSetStudioModal {
                         <span class="ass-status-pill ${hasAnimaTools ? "is-ok" : "is-warn"}" title="${hasAnimaTools ? "Comfyui-Anima-Tools の Select / LoRA Manager と完全連携中" : "標準フォールバックモード"}">
                             ${hasAnimaTools ? "Anima-Tools 連携OK" : "標準モード"}
                         </span>
-                        <button type="button" class="ass-icon-btn" data-close title="閉じる (Esc)">✕</button>
+                        <button type="button" class="ass-icon-btn" data-close title="閉じる">✕</button>
                     </div>
                 </header>
                 <main class="ass-main" data-main></main>
@@ -433,6 +433,9 @@ export class AnimaSetStudioModal {
             onSettingsChange: (nextSettings) => {
                 const countChanged =
                     Number(this.state.settings?.images_per_set) !== Number(nextSettings.images_per_set);
+                const resolutionChanged =
+                    Number(this.state.settings?.base_resolution) !== Number(nextSettings.base_resolution) ||
+                    String(this.state.settings?.default_aspect_ratio || "") !== String(nextSettings.default_aspect_ratio || "");
                 this.state.settings = nextSettings;
                 this.scheduleSaveState();
                 this.updateFooterSummary();
@@ -440,6 +443,9 @@ export class AnimaSetStudioModal {
                     mainEl.querySelectorAll("[data-count]").forEach((input) => {
                         input.placeholder = String(nextSettings.images_per_set || 1);
                     });
+                }
+                if (resolutionChanged) {
+                    renderSelectedSets();
                 }
             },
         });
@@ -482,6 +488,8 @@ export class AnimaSetStudioModal {
                     index: idx,
                     total: selected.length,
                     defaultImagesPerSet: this.state.settings?.images_per_set || 1,
+                    baseResolution: normalizeBaseResolution(this.state.settings?.base_resolution ?? DEFAULT_BASE_RESOLUTION),
+                    defaultAspectRatio: normalizeAspectRatio(this.state.settings?.default_aspect_ratio, false) || DEFAULT_ASPECT_RATIO,
                     excludedCategories: this.state.excluded_categories || [],
                     availableLoras: this.options.loras || [],
                     collapsed: this.collapsedCards.has(item.instance_id),
@@ -517,6 +525,7 @@ export class AnimaSetStudioModal {
                                 id: targetItem.source_set_id,
                                 name: targetItem.name,
                                 thumbnail: targetItem.thumbnail || "",
+                                aspect_ratio: targetItem.aspect_ratio || "",
                                 separator: targetItem.separator,
                                 loras: targetItem.loras,
                                 prompt_boxes: targetItem.prompt_boxes,
@@ -534,6 +543,7 @@ export class AnimaSetStudioModal {
                             const saved = await saveSet({
                                 name: newName.trim(),
                                 thumbnail: targetItem.thumbnail || "",
+                                aspect_ratio: targetItem.aspect_ratio || "",
                                 separator: targetItem.separator,
                                 loras: targetItem.loras,
                                 prompt_boxes: targetItem.prompt_boxes,
@@ -652,7 +662,10 @@ export class AnimaSetStudioModal {
                         <div class="ass-picker-card-content">
                             <div class="ass-picker-card-top">
                                 <strong>${escapeHtml(setItem.name)}</strong>
-                                <span class="ass-badge-soft">LoRA ${loraCount}</span>
+                                <span class="ass-badge-group">
+                                    ${setItem.aspect_ratio ? `<span class="ass-badge-ratio">📐 ${escapeHtml(setItem.aspect_ratio)}</span>` : ""}
+                                    <span class="ass-badge-soft">LoRA ${loraCount}</span>
+                                </span>
                             </div>
                             <div class="ass-picker-cats">${cats.length ? cats.map((c) => `<span>${escapeHtml(c)}</span>`).join("") : '<span class="ass-muted">カテゴリ名なし</span>'}</div>
                         </div>
@@ -773,6 +786,7 @@ export class AnimaSetStudioModal {
             id: "",
             name: "",
             thumbnail: "",
+            aspect_ratio: "",
             separator: ", ",
             loras: [],
             prompt_boxes: withTemplate
@@ -845,11 +859,13 @@ export class AnimaSetStudioModal {
                 }
             }
 
+            const detectedRatio = normalizeAspectRatio(imported.aspect_ratio, true);
             if (asNew || !this.editingSet) {
                 this.editingSet = {
                     id: "",
                     name: imported.suggested_name || "画像から読込セット",
                     thumbnail: autoThumb?.thumbnail || "",
+                    aspect_ratio: detectedRatio,
                     separator,
                     loras,
                     prompt_boxes: boxes,
@@ -862,6 +878,9 @@ export class AnimaSetStudioModal {
                 if (autoThumb?.thumbnail) {
                     this.editingSet.thumbnail = autoThumb.thumbnail;
                     this.lastThumbMeta = autoThumb;
+                }
+                if (detectedRatio && !this.editingSet.aspect_ratio) {
+                    this.editingSet.aspect_ratio = detectedRatio;
                 }
                 this.editingSet.separator = separator;
                 this.editingSet.loras = loras;
@@ -915,6 +934,13 @@ export class AnimaSetStudioModal {
                 ? `${this.editingSet.thumbnail.split(".").pop().toUpperCase()} 軽量済`
                 : "最大320px WebPに自動軽量化";
 
+        const baseRes = normalizeBaseResolution(this.state?.settings?.base_resolution ?? DEFAULT_BASE_RESOLUTION);
+        const defRatio = normalizeAspectRatio(this.state?.settings?.default_aspect_ratio, false) || DEFAULT_ASPECT_RATIO;
+        const editRatio = normalizeAspectRatio(this.editingSet.aspect_ratio, true);
+        const editIsCustomRatio = Boolean(editRatio) && !isPresetAspectRatio(editRatio);
+        const [editCustomW, editCustomH] = editIsCustomRatio ? parseAspectRatioParts(editRatio) : [4, 5];
+        const editRatioPreview = formatSetResolutionBadge(baseRes, editRatio, defRatio);
+
         mainEl.innerHTML = `
             <div class="ass-sets-layout">
                 <aside class="ass-pane ass-pane-setlist">
@@ -948,6 +974,22 @@ export class AnimaSetStudioModal {
                                     ${this.isUploadingThumb ? "⏳ 軽量化中..." : editingThumbUrl ? "📷 サムネ変更" : "📷 サムネ画像アップ"}
                                 </button>
                                 <span class="ass-thumb-meta">${escapeHtml(thumbInfoText)}</span>
+                            </div>
+                            <div class="ass-ratio-editor-row">
+                                <span class="ass-label-inline">アスペクト比</span>
+                                <select class="ass-select ass-ratio-select-sm" data-edit-ratio-select>
+                                    <option value="" ${!editRatio ? "selected" : ""}>共通設定のまま (${escapeHtml(defRatio)})</option>
+                                    ${ASPECT_RATIO_PRESETS.map(
+                                        (p) => `<option value="${p.value}" ${editRatio === p.value ? "selected" : ""}>${escapeHtml(p.label)}</option>`,
+                                    ).join("")}
+                                    <option value="__custom__" ${editIsCustomRatio ? "selected" : ""}>カスタム比率...</option>
+                                </select>
+                                <span class="ass-ratio-custom-wrap" data-edit-ratio-custom ${editIsCustomRatio ? "" : "hidden"}>
+                                    <input type="number" class="ass-input ass-ratio-num" data-edit-ratio-w min="1" max="100" step="any" value="${escapeHtml(editCustomW)}" />
+                                    <span class="ass-muted">:</span>
+                                    <input type="number" class="ass-input ass-ratio-num" data-edit-ratio-h min="1" max="100" step="any" value="${escapeHtml(editCustomH)}" />
+                                </span>
+                                <span class="ass-badge-ratio" data-edit-ratio-preview title="イラスト集作成タブの現在の基準解像度 (${baseRes}px) での出力サイズ目安">${escapeHtml(editRatioPreview)}</span>
                             </div>
                         </div>
                         <div class="ass-editor-top-btns">
@@ -1189,6 +1231,38 @@ export class AnimaSetStudioModal {
         });
         nameInput.addEventListener("keydown", (e) => e.stopPropagation());
 
+        // Set aspect ratio editor controls
+        const editRatioSelect = mainEl.querySelector("[data-edit-ratio-select]");
+        const editRatioCustomWrap = mainEl.querySelector("[data-edit-ratio-custom]");
+        const editRatioW = mainEl.querySelector("[data-edit-ratio-w]");
+        const editRatioH = mainEl.querySelector("[data-edit-ratio-h]");
+        const editRatioPreviewEl = mainEl.querySelector("[data-edit-ratio-preview]");
+
+        const setEditingRatio = (nextVal) => {
+            this.editingSet.aspect_ratio = normalizeAspectRatio(nextVal, true);
+            if (editRatioPreviewEl) {
+                editRatioPreviewEl.textContent = formatSetResolutionBadge(baseRes, this.editingSet.aspect_ratio, defRatio);
+            }
+        };
+        const applyEditCustomRatio = () => {
+            const norm = normalizeAspectRatio(`${editRatioW.value}:${editRatioH.value}`, true);
+            if (norm) setEditingRatio(norm);
+        };
+        editRatioSelect.onchange = () => {
+            const val = editRatioSelect.value;
+            if (val === "__custom__") {
+                editRatioCustomWrap.hidden = false;
+                applyEditCustomRatio();
+            } else {
+                editRatioCustomWrap.hidden = true;
+                setEditingRatio(val);
+            }
+        };
+        for (const inp of [editRatioW, editRatioH]) {
+            inp.addEventListener("input", applyEditCustomRatio);
+            inp.addEventListener("keydown", (e) => e.stopPropagation());
+        }
+
         mainEl.querySelector("[data-save-set]").onclick = async () => {
             const trimmed = String(this.editingSet.name || "").trim();
             if (!trimmed) {
@@ -1201,16 +1275,18 @@ export class AnimaSetStudioModal {
                     id: this.editingSet.id || undefined,
                     name: trimmed,
                     thumbnail: this.editingSet.thumbnail || "",
+                    aspect_ratio: this.editingSet.aspect_ratio || "",
                     separator: this.editingSet.separator ?? ", ",
                     loras: this.editingSet.loras || [],
                     prompt_boxes: this.editingSet.prompt_boxes || [],
                 });
                 this.editingSet = deepClone(saved);
-                // Keep thumbnails in sync for any already-called instances of this set
+                // Keep thumbnails & aspect_ratio in sync for any already-called instances of this set
                 let syncedInstances = false;
                 for (const inst of this.state?.selected_sets || []) {
                     if (inst.source_set_id === saved.id) {
                         inst.thumbnail = saved.thumbnail || "";
+                        inst.aspect_ratio = saved.aspect_ratio || "";
                         syncedInstances = true;
                     }
                 }
@@ -1274,7 +1350,10 @@ export class AnimaSetStudioModal {
                             <div class="ass-saved-item-meta">
                                 <div class="ass-saved-item-title">
                                     <strong>${escapeHtml(setItem.name)}</strong>
-                                    <span class="ass-badge-soft">LoRA ${loraCount}</span>
+                                    <span class="ass-badge-group">
+                                        ${setItem.aspect_ratio ? `<span class="ass-badge-ratio">📐 ${escapeHtml(setItem.aspect_ratio)}</span>` : ""}
+                                        <span class="ass-badge-soft">LoRA ${loraCount}</span>
+                                    </span>
                                 </div>
                                 <div class="ass-saved-item-cats">${cats.map((c) => `<span>${escapeHtml(c)}</span>`).join("")}</div>
                             </div>

@@ -13,7 +13,12 @@ import struct
 import zlib
 from typing import Any
 
-from .storage import normalize_lora_entry, normalize_lora_list, normalize_prompt_boxes
+from .storage import (
+    detect_aspect_ratio_from_size,
+    normalize_lora_entry,
+    normalize_lora_list,
+    normalize_prompt_boxes,
+)
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
@@ -1302,6 +1307,62 @@ def _suggest_name(filename: str, chunks: dict[str, str]) -> str:
     return "画像から読込セット"
 
 
+def extract_image_dimensions(raw_bytes: bytes) -> tuple[int, int] | None:
+    """Read (width, height) from PNG / WebP / JPEG headers using stdlib only."""
+    if not raw_bytes:
+        return None
+    # PNG IHDR
+    if len(raw_bytes) >= 24 and raw_bytes[:8] == PNG_SIGNATURE and raw_bytes[12:16] == b"IHDR":
+        w, h = struct.unpack(">II", raw_bytes[16:24])
+        return (w, h) if w > 0 and h > 0 else None
+    # WebP (VP8X / VP8L / VP8 )
+    if len(raw_bytes) >= 30 and raw_bytes[:4] == b"RIFF" and raw_bytes[8:12] == b"WEBP":
+        chunk = raw_bytes[12:16]
+        if chunk == b"VP8X" and len(raw_bytes) >= 30:
+            w = 1 + int.from_bytes(raw_bytes[24:27], "little")
+            h = 1 + int.from_bytes(raw_bytes[27:30], "little")
+            return (w, h) if w > 0 and h > 0 else None
+        if chunk == b"VP8L" and len(raw_bytes) >= 25 and raw_bytes[20] == 0x2F:
+            bits = int.from_bytes(raw_bytes[21:25], "little")
+            w = 1 + (bits & 0x3FFF)
+            h = 1 + ((bits >> 14) & 0x3FFF)
+            return (w, h) if w > 0 and h > 0 else None
+        if chunk == b"VP8 " and len(raw_bytes) >= 30 and raw_bytes[23:26] == b"\x9d\x01\x2a":
+            w, h = struct.unpack("<HH", raw_bytes[26:30])
+            w &= 0x3FFF
+            h &= 0x3FFF
+            return (w, h) if w > 0 and h > 0 else None
+    # JPEG SOF
+    if len(raw_bytes) >= 4 and raw_bytes[:2] == b"\xff\xd8":
+        pos = 2
+        total = len(raw_bytes)
+        sof_markers = {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}
+        while pos + 2 <= total:
+            if raw_bytes[pos] != 0xFF:
+                pos += 1
+                continue
+            while pos < total and raw_bytes[pos] == 0xFF:
+                pos += 1
+            if pos >= total:
+                break
+            marker = raw_bytes[pos]
+            pos += 1
+            if marker in (0xD8, 0xD9, 0x01) or (0xD0 <= marker <= 0xD7):
+                if marker == 0xD9:
+                    break
+                continue
+            if marker == 0xDA or pos + 2 > total:
+                break
+            seg_len = struct.unpack(">H", raw_bytes[pos : pos + 2])[0]
+            if seg_len < 2 or pos + seg_len > total:
+                break
+            if marker in sof_markers and seg_len >= 7:
+                h, w = struct.unpack(">HH", raw_bytes[pos + 3 : pos + 7])
+                return (w, h) if w > 0 and h > 0 else None
+            pos += seg_len
+    return None
+
+
 def import_set_from_image_bytes(
     raw_bytes: bytes,
     *,
@@ -1360,11 +1421,19 @@ def import_set_from_image_bytes(
         raw_prompt_boxes = prompt_boxes
         warnings.append("プロンプトテキストは見つかりませんでした（LoRAのみ読み込みました）")
 
+    dims = extract_image_dimensions(raw_bytes)
+    detected_ratio = ""
+    if dims and dims[0] >= 16 and dims[1] >= 16:
+        detected_ratio = detect_aspect_ratio_from_size(dims[0], dims[1])
+
     return {
         "suggested_name": _suggest_name(filename, chunks),
         "source_type": parsed["source_type"],
         "source_label": parsed["source_label"],
         "separator": parsed.get("separator", ", "),
+        "aspect_ratio": detected_ratio,
+        "image_width": dims[0] if dims else 0,
+        "image_height": dims[1] if dims else 0,
         "loras": resolved_loras,
         "prompt_boxes": prompt_boxes,
         "raw_prompt_boxes": raw_prompt_boxes,

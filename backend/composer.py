@@ -10,6 +10,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 from .storage import (
+    compute_dimensions_for_aspect_ratio,
+    normalize_aspect_ratio,
     normalize_lora_list,
     normalize_prompt_boxes,
     normalize_settings,
@@ -227,6 +229,8 @@ def build_single_workflow_prompt(
     set_name: str = "",
     use_anima_tools: bool = True,
     now: datetime | None = None,
+    width: int | None = None,
+    height: int | None = None,
 ) -> dict[str, Any]:
     """Build a ComfyUI /prompt API workflow dictionary for a single generation."""
     cfg = normalize_settings(settings)
@@ -316,8 +320,8 @@ def build_single_workflow_prompt(
     prompt["8"] = {
         "class_type": "EmptySD3LatentImage",
         "inputs": {
-            "width": int(cfg["width"]),
-            "height": int(cfg["height"]),
+            "width": int(width) if width is not None else int(cfg["width"]),
+            "height": int(height) if height is not None else int(cfg["height"]),
             "batch_size": 1,
         },
     }
@@ -410,6 +414,24 @@ def build_batch_jobs(
         merged_loras = merge_loras(common_loras, set_loras)
         positive_preview = join_prompt_boxes_text(combined_boxes, separator)
 
+        raw_settings = payload.get("settings") if isinstance(payload.get("settings"), dict) else {}
+        set_aspect_ratio = normalize_aspect_ratio(set_item.get("aspect_ratio"), allow_empty=True)
+        effective_ratio = set_aspect_ratio or settings["default_aspect_ratio"]
+        use_legacy_wh = (
+            not set_aspect_ratio
+            and raw_settings.get("base_resolution") in (None, "")
+            and raw_settings.get("default_aspect_ratio") in (None, "")
+            and (raw_settings.get("width") not in (None, "") or raw_settings.get("height") not in (None, ""))
+        )
+        if use_legacy_wh:
+            job_w, job_h = int(settings["width"]), int(settings["height"])
+        else:
+            job_w, job_h = compute_dimensions_for_aspect_ratio(
+                settings["base_resolution"],
+                effective_ratio,
+            )
+        job_settings = {**settings, "width": job_w, "height": job_h}
+
         for img_idx in range(images_count):
             seed = resolve_job_seed(
                 seed_mode=settings["seed_mode"],
@@ -421,12 +443,14 @@ def build_batch_jobs(
                 combined_boxes=combined_boxes,
                 merged_loras=merged_loras,
                 negative_prompt=negative_prompt,
-                settings=settings,
+                settings=job_settings,
                 seed=seed,
                 separator=separator,
                 set_name=set_name,
                 use_anima_tools=use_anima_tools,
                 now=batch_dt,
+                width=job_w,
+                height=job_h,
             )
             jobs.append(
                 {
@@ -435,6 +459,9 @@ def build_batch_jobs(
                     "instance_id": str(set_item.get("instance_id") or f"inst_{set_idx}"),
                     "source_set_id": str(set_item.get("source_set_id") or ""),
                     "set_name": set_name,
+                    "aspect_ratio": effective_ratio,
+                    "width": job_w,
+                    "height": job_h,
                     "seed": seed,
                     "positive_preview": positive_preview,
                     "merged_loras_count": len(merged_loras),

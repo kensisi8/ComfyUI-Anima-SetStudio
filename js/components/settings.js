@@ -1,11 +1,14 @@
-const RESOLUTION_PRESETS = [
-    { label: "縦標準 832×1216", w: 832, h: 1216 },
-    { label: "縦 896×1152", w: 896, h: 1152 },
-    { label: "縦大 1024×1440", w: 1024, h: 1440 },
-    { label: "正方形 1024×1024", w: 1024, h: 1024 },
-    { label: "横標準 1216×832", w: 1216, h: 832 },
-    { label: "高速ラフ 640×960", w: 640, h: 960 },
-];
+import {
+    ASPECT_RATIO_PRESETS,
+    BASE_RESOLUTION_PRESETS,
+    DEFAULT_ASPECT_RATIO,
+    DEFAULT_BASE_RESOLUTION,
+    MAX_BASE_RESOLUTION,
+    MIN_BASE_RESOLUTION,
+    computeDimensionsForAspectRatio,
+    normalizeAspectRatio,
+    normalizeBaseResolution,
+} from "../aspect_ratio.js";
 
 const SEED_MODE_OPTIONS = [
     { value: "randomize", label: "ランダム（1枚ごと自動）", hint: "(ランダム時は自動発行)" },
@@ -67,6 +70,17 @@ export function renderGenerationSettings(container, options) {
     } = options;
 
     const cur = { ...(runtimeOptions.defaults || {}), ...(settings || {}) };
+    cur.base_resolution = normalizeBaseResolution(cur.base_resolution ?? DEFAULT_BASE_RESOLUTION);
+    cur.default_aspect_ratio = normalizeAspectRatio(cur.default_aspect_ratio, false) || DEFAULT_ASPECT_RATIO;
+
+    const formatPreviewLine = () => {
+        const base = normalizeBaseResolution(cur.base_resolution);
+        const defRatio = normalizeAspectRatio(cur.default_aspect_ratio, false);
+        const defDim = computeDimensionsForAspectRatio(base, defRatio);
+        const sqDim = computeDimensionsForAspectRatio(base, "1:1");
+        const wideDim = computeDimensionsForAspectRatio(base, "16:9");
+        return `出力目安（約 ${defDim.megapixels}MP）: 共通(${defRatio})=${defDim.width}×${defDim.height} / 1:1=${sqDim.width}×${sqDim.height} / 16:9=${wideDim.width}×${wideDim.height}`;
+    };
 
     container.innerHTML = `
         <div class="ass-settings-wrap">
@@ -77,17 +91,22 @@ export function renderGenerationSettings(container, options) {
 
             <div class="ass-basic-grid">
                 <div class="ass-field">
-                    <label class="ass-label">解像度（幅 × 高さ）</label>
+                    <label class="ass-label">生成サイズ感（基準解像度）</label>
                     <div class="ass-inline-row">
-                        <input type="number" class="ass-input ass-num-sm" data-key="width" step="16" min="64" max="4096" value="${escapeHtml(cur.width)}" />
-                        <span class="ass-muted">×</span>
-                        <input type="number" class="ass-input ass-num-sm" data-key="height" step="16" min="64" max="4096" value="${escapeHtml(cur.height)}" />
+                        <input type="number" class="ass-input ass-num-sm" data-key="base_resolution" step="16" min="${MIN_BASE_RESOLUTION}" max="${MAX_BASE_RESOLUTION}" value="${escapeHtml(cur.base_resolution)}" />
+                        <span class="ass-muted">px基準</span>
+                        <select class="ass-select ass-ratio-select-sm" data-key="default_aspect_ratio" title="セット側が「共通設定のまま」の場合に使われるデフォルトのアスペクト比">
+                            ${ASPECT_RATIO_PRESETS.map(
+                                (p) => `<option value="${p.value}" ${cur.default_aspect_ratio === p.value ? "selected" : ""}>共通比 ${escapeHtml(p.label)}</option>`,
+                            ).join("")}
+                        </select>
                     </div>
                     <div class="ass-preset-chips">
-                        ${RESOLUTION_PRESETS.map(
-                            (p) => `<button type="button" class="ass-chip-btn" data-res-w="${p.w}" data-res-h="${p.h}">${escapeHtml(p.label)}</button>`,
+                        ${BASE_RESOLUTION_PRESETS.map(
+                            (p) => `<button type="button" class="ass-chip-btn ${cur.base_resolution === p.value ? "is-active" : ""}" data-base-res="${p.value}">${escapeHtml(p.label)}</button>`,
                         ).join("")}
                     </div>
+                    <div class="ass-hint" data-res-preview>${escapeHtml(formatPreviewLine())}</div>
                 </div>
 
                 <div class="ass-field">
@@ -181,22 +200,35 @@ export function renderGenerationSettings(container, options) {
     negEl.addEventListener("keydown", (e) => e.stopPropagation());
 
     const seedInput = container.querySelector('[data-key="seed"]');
-    const seedModeSelect = container.querySelector('[data-key="seed_mode"]');
     const seedHintEl = container.querySelector("[data-seed-hint]");
+    const resPreviewEl = container.querySelector("[data-res-preview]");
+    const baseResInput = container.querySelector('[data-key="base_resolution"]');
 
     const syncSeedUi = () => {
         const mode = cur.seed_mode || "randomize";
         if (seedHintEl) seedHintEl.textContent = getSeedHint(mode);
         if (seedInput) seedInput.style.opacity = mode === "randomize" ? "0.65" : "1";
     };
+    const syncResolutionUi = () => {
+        const dims = computeDimensionsForAspectRatio(cur.base_resolution, cur.default_aspect_ratio);
+        cur.width = dims.width;
+        cur.height = dims.height;
+        if (resPreviewEl) resPreviewEl.textContent = formatPreviewLine();
+        container.querySelectorAll("[data-base-res]").forEach((btn) => {
+            btn.classList.toggle("is-active", Number(btn.dataset.baseRes) === Number(cur.base_resolution));
+        });
+    };
     syncSeedUi();
+    syncResolutionUi();
 
     const updateKey = (key, rawVal, isFloat = false, isInt = false) => {
         let val = rawVal;
         if (isInt) {
             const parsed = parseInt(rawVal, 10);
             if (!Number.isFinite(parsed)) return;
-            val = key === "seed" ? Math.max(0, Math.min(MAX_SAFE_SEED, parsed)) : parsed;
+            if (key === "seed") val = Math.max(0, Math.min(MAX_SAFE_SEED, parsed));
+            else if (key === "base_resolution") val = normalizeBaseResolution(parsed);
+            else val = parsed;
         } else if (isFloat) {
             const parsed = parseFloat(rawVal);
             if (!Number.isFinite(parsed)) return;
@@ -204,10 +236,11 @@ export function renderGenerationSettings(container, options) {
         }
         cur[key] = val;
         if (key === "seed_mode") syncSeedUi();
+        if (key === "base_resolution" || key === "default_aspect_ratio") syncResolutionUi();
         onSettingsChange({ ...cur });
     };
 
-    const intKeys = new Set(["width", "height", "steps", "images_per_set", "seed"]);
+    const intKeys = new Set(["base_resolution", "steps", "images_per_set", "seed"]);
     const floatKeys = new Set(["shift", "cfg", "denoise"]);
 
     container.querySelectorAll("[data-key]").forEach((el) => {
@@ -226,22 +259,16 @@ export function renderGenerationSettings(container, options) {
             const rolled = rollRandomSeed();
             seedInput.value = String(rolled);
             cur.seed = rolled;
-            // If user explicitly rolls a seed while in randomize mode, keep their mode choice
-            // and let them see the fresh value immediately.
             onSettingsChange({ ...cur });
         };
     }
 
-    const widthInput = container.querySelector('[data-key="width"]');
-    const heightInput = container.querySelector('[data-key="height"]');
-    container.querySelectorAll("[data-res-w]").forEach((btn) => {
+    container.querySelectorAll("[data-base-res]").forEach((btn) => {
         btn.onclick = () => {
-            const w = parseInt(btn.dataset.resW, 10);
-            const h = parseInt(btn.dataset.resH, 10);
-            widthInput.value = String(w);
-            heightInput.value = String(h);
-            cur.width = w;
-            cur.height = h;
+            const val = normalizeBaseResolution(parseInt(btn.dataset.baseRes, 10));
+            if (baseResInput) baseResInput.value = String(val);
+            cur.base_resolution = val;
+            syncResolutionUi();
             onSettingsChange({ ...cur });
         };
     });
