@@ -12,6 +12,7 @@ from typing import Any, Callable
 from .storage import (
     compute_dimensions_for_aspect_ratio,
     normalize_aspect_ratio,
+    normalize_category_list,
     normalize_lora_list,
     normalize_prompt_boxes,
     normalize_settings,
@@ -55,12 +56,26 @@ def compose_prompt_boxes_plan_b(
     common_boxes: list[dict[str, Any]],
     set_boxes: list[dict[str, Any]],
     excluded_categories: list[str] | set[str],
+    disabled_common_categories: list[str] | set[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Compose boxes using Plan B: common boxes first, followed by active non-excluded set boxes."""
+    """Compose boxes using Plan B:
+    - Common boxes first, excluding any category listed in this set's `disabled_common_categories`.
+    - Followed by active set boxes, excluding any category listed in collection-level `excluded_categories`.
+    Both exclusions operate strictly independently.
+    """
+    disabled_common_norm = {
+        normalize_category(item)
+        for item in (disabled_common_categories or [])
+        if normalize_category(item)
+    }
     active_common = [
         copy.deepcopy(box)
         for box in normalize_prompt_boxes(common_boxes)
         if not box.get("disabled", False)
+        and not (
+            normalize_category(box.get("label"))
+            and normalize_category(box.get("label")) in disabled_common_norm
+        )
     ]
     active_set = filter_set_boxes(set_boxes, excluded_categories)
 
@@ -410,7 +425,13 @@ def build_batch_jobs(
             except (TypeError, ValueError):
                 images_count = int(settings["images_per_set"])
 
-        combined_boxes = compose_prompt_boxes_plan_b(common_boxes, set_boxes, excluded_categories)
+        disabled_common_categories = normalize_category_list(set_item.get("disabled_common_categories"))
+        combined_boxes = compose_prompt_boxes_plan_b(
+            common_boxes,
+            set_boxes,
+            excluded_categories,
+            disabled_common_categories=disabled_common_categories,
+        )
         merged_loras = merge_loras(common_loras, set_loras)
         positive_preview = join_prompt_boxes_text(combined_boxes, separator)
 
@@ -471,6 +492,7 @@ def build_batch_jobs(
                             "set_name": set_name,
                             "source_set_id": str(set_item.get("source_set_id") or ""),
                             "excluded_categories": excluded_categories,
+                            "disabled_common_categories": disabled_common_categories,
                         }
                     },
                 }

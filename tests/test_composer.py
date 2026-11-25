@@ -250,6 +250,65 @@ class TestComposer(unittest.TestCase):
             (768, 768),
         ])
 
+    def test_disabled_common_categories_per_set_independent_from_excluded_categories(self):
+        common_boxes = [
+            {"id": "c1", "label": "品質", "text": "masterpiece,", "disabled": False},
+            {"id": "c2", "label": "背景", "text": "common park,", "disabled": False},
+        ]
+        # Set A disables common [背景] and has its own [背景]
+        # Set B disables common [背景] and has NO [背景]
+        # Set C does NOT disable common [背景]
+        payload = {
+            "common_prompt_boxes": common_boxes,
+            "excluded_categories": [],
+            "settings": {"images_per_set": 1},
+            "selected_sets": [
+                {
+                    "instance_id": "i_a",
+                    "name": "セットA",
+                    "enabled": True,
+                    "disabled_common_categories": [" 背景 "],
+                    "prompt_boxes": [
+                        {"id": "a1", "label": "衣装", "text": "dress,", "disabled": False},
+                        {"id": "a2", "label": "背景", "text": "set beach,", "disabled": False},
+                    ],
+                },
+                {
+                    "instance_id": "i_b",
+                    "name": "セットB",
+                    "enabled": True,
+                    "disabled_common_categories": ["背景"],
+                    "prompt_boxes": [
+                        {"id": "b1", "label": "衣装", "text": "uniform,", "disabled": False},
+                    ],
+                },
+                {
+                    "instance_id": "i_c",
+                    "name": "セットC",
+                    "enabled": True,
+                    "disabled_common_categories": [],
+                    "prompt_boxes": [
+                        {"id": "c3", "label": "衣装", "text": "kimono,", "disabled": False},
+                    ],
+                },
+            ],
+        }
+
+        jobs = build_batch_jobs(payload, seed_fn=lambda: 1)
+        self.assertEqual(jobs[0]["positive_preview"], "masterpiece, dress, set beach, ")
+        self.assertEqual(jobs[1]["positive_preview"], "masterpiece, uniform, ")
+        self.assertEqual(jobs[2]["positive_preview"], "masterpiece, common park, kimono, ")
+
+        # When collection ALSO excludes [背景], Set A's own [背景] is excluded too (neither appears)
+        jobs_both_excluded = build_batch_jobs(
+            {**payload, "excluded_categories": ["背景"]},
+            seed_fn=lambda: 1,
+        )
+        self.assertEqual(jobs_both_excluded[0]["positive_preview"], "masterpiece, dress, ")
+        self.assertEqual(jobs_both_excluded[1]["positive_preview"], "masterpiece, uniform, ")
+        # Set C still gets common [背景] because collection excluded_categories only excludes set boxes
+        self.assertEqual(jobs_both_excluded[2]["positive_preview"], "masterpiece, common park, kimono, ")
+
     def test_empty_selection_raises(self):
         with self.assertRaises(ValueError):
             build_batch_jobs({"selected_sets": []})

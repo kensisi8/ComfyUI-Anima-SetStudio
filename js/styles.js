@@ -1180,6 +1180,199 @@ const CSS = `
     gap: 8px;
     padding: 8px 12px 0;
 }
+
+/* Per-set disabled common prompt categories */
+.ass-badge-common-off {
+    display: inline-flex;
+    align-items: center;
+    padding: 1px 6px;
+    border-radius: 999px;
+    font-size: 10.5px;
+    font-weight: 600;
+    color: #fca5a5;
+    background: rgba(239, 68, 68, 0.14);
+    border: 1px solid rgba(239, 68, 68, 0.35);
+    white-space: nowrap;
+}
+.ass-badge-common-off[hidden] {
+    display: none;
+}
+.ass-common-off-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    padding: 9px 11px;
+    border: 1px solid var(--ass-line);
+    border-radius: 9px;
+    background: color-mix(in srgb, var(--ass-surface) 75%, transparent);
+}
+.ass-common-off-header {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+.ass-common-off-body {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+.ass-common-off-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    align-items: center;
+}
+.ass-common-off-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 8px;
+    border-radius: 999px;
+    border: 1px solid var(--ass-line);
+    background: var(--ass-surface);
+    color: var(--ass-text);
+    font-size: 11.5px;
+    cursor: pointer;
+    transition: border-color 0.14s ease, background 0.14s ease, color 0.14s ease;
+}
+.ass-common-off-chip:hover {
+    border-color: color-mix(in srgb, var(--ass-accent) 60%, var(--ass-line));
+}
+.ass-common-off-chip.is-off {
+    border-color: rgba(239, 68, 68, 0.65);
+    background: rgba(239, 68, 68, 0.18);
+    color: #fecaca;
+    font-weight: 600;
+}
+.ass-common-off-add {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+}
+.ass-common-off-input {
+    width: 168px;
+    padding: 3px 8px;
+    font-size: 11.5px;
+}
+.ass-card-common-off-bar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 6px 12px 0;
+}
+
+/* Reorder Modal */
+.ass-submodal-reorder {
+    width: min(680px, 94vw);
+    max-height: 84vh;
+}
+.ass-reorder-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+.ass-reorder-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 56vh;
+    overflow-y: auto;
+    padding: 2px 2px 4px;
+}
+.ass-reorder-item {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 7px 10px;
+    border: 1px solid var(--ass-line);
+    border-radius: 9px;
+    background: var(--ass-surface);
+    cursor: grab;
+    user-select: none;
+    transition: border-color 0.12s ease, background 0.12s ease, opacity 0.12s ease;
+}
+.ass-reorder-item:active {
+    cursor: grabbing;
+}
+.ass-reorder-item:hover {
+    border-color: color-mix(in srgb, var(--ass-accent) 55%, var(--ass-line));
+}
+.ass-reorder-item.is-muted {
+    opacity: 0.58;
+}
+.ass-reorder-item.is-dragging {
+    opacity: 0.38;
+    border-style: dashed;
+}
+.ass-reorder-item.is-drop-before {
+    box-shadow: inset 0 3px 0 0 var(--ass-accent);
+}
+.ass-reorder-item.is-drop-after {
+    box-shadow: inset 0 -3px 0 0 var(--ass-accent);
+}
+.ass-reorder-handle {
+    font-size: 15px;
+    color: var(--ass-muted);
+    letter-spacing: -2px;
+    padding: 0 2px;
+    flex: none;
+}
+.ass-reorder-index {
+    min-width: 26px;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--ass-accent);
+    text-align: center;
+    flex: none;
+}
+.ass-set-thumb-reorder {
+    width: 34px;
+    height: 44px;
+    font-size: 13px;
+}
+.ass-reorder-info {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.ass-reorder-name {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+.ass-reorder-name strong {
+    font-size: 12.5px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.ass-reorder-meta {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 5px;
+}
+.ass-reorder-btns {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex: none;
+}
+
+.ass-set-card.is-just-moved {
+    border-color: var(--ass-accent);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--ass-accent) 32%, transparent);
+    transition: border-color 0.25s ease, box-shadow 0.25s ease;
+}
 `;
 
 export function injectStudioStyles() {

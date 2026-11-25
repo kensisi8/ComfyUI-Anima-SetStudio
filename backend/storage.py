@@ -89,6 +89,21 @@ def validate_id(raw_id: Any) -> str:
     return value
 
 
+def normalize_category_list(raw: Any) -> list[str]:
+    """Normalize a list of category names (strip whitespace, case-insensitive dedupe)."""
+    if not isinstance(raw, list):
+        return []
+    seen: set[str] = set()
+    cleaned: list[str] = []
+    for item in raw:
+        label = str(item or "").strip()
+        key = label.casefold()
+        if label and key not in seen:
+            seen.add(key)
+            cleaned.append(label)
+    return cleaned
+
+
 def _format_ratio_part(val: float) -> str:
     rounded = round(val, 2)
     if abs(rounded - round(rounded)) < 1e-6:
@@ -731,6 +746,7 @@ class SetStorage:
             "name": str(raw.get("name") or "名称未設定セット").strip() or "名称未設定セット",
             "thumbnail": sanitize_thumbnail_name(raw.get("thumbnail")),
             "aspect_ratio": normalize_aspect_ratio(raw.get("aspect_ratio"), allow_empty=True),
+            "disabled_common_categories": normalize_category_list(raw.get("disabled_common_categories")),
             "separator": str(separator),
             "loras": normalize_lora_list(raw.get("loras")),
             "prompt_boxes": normalize_prompt_boxes(raw.get("prompt_boxes"), ensure_non_empty=True),
@@ -749,17 +765,7 @@ class SetStorage:
         base["common_loras"] = normalize_lora_list(raw.get("common_loras"))
         if "negative_prompt" in raw and raw["negative_prompt"] is not None:
             base["negative_prompt"] = str(raw["negative_prompt"])
-        raw_excluded = raw.get("excluded_categories")
-        if isinstance(raw_excluded, list):
-            seen: set[str] = set()
-            cleaned_ex: list[str] = []
-            for item in raw_excluded:
-                label = str(item or "").strip()
-                key = label.casefold()
-                if label and key not in seen:
-                    seen.add(key)
-                    cleaned_ex.append(label)
-            base["excluded_categories"] = cleaned_ex
+        base["excluded_categories"] = normalize_category_list(raw.get("excluded_categories"))
         base["settings"] = normalize_settings(raw.get("settings"))
 
         raw_selected = raw.get("selected_sets")
@@ -785,6 +791,9 @@ class SetStorage:
                         "name": name,
                         "thumbnail": sanitize_thumbnail_name(entry.get("thumbnail")),
                         "aspect_ratio": normalize_aspect_ratio(entry.get("aspect_ratio"), allow_empty=True),
+                        "disabled_common_categories": normalize_category_list(
+                            entry.get("disabled_common_categories")
+                        ),
                         "enabled": entry.get("enabled") is not False,
                         "images_count": parsed_override,
                         "separator": str(entry.get("separator")) if entry.get("separator") is not None else ", ",

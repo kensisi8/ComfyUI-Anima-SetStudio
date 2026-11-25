@@ -60,12 +60,32 @@ function makeInstanceFromSet(setRecord) {
         name: setRecord.name || "無題セット",
         thumbnail: setRecord.thumbnail || "",
         aspect_ratio: setRecord.aspect_ratio || "",
+        disabled_common_categories: deepClone(setRecord.disabled_common_categories || []),
         enabled: true,
         images_count: null,
         separator: setRecord.separator ?? ", ",
         loras: deepClone(setRecord.loras || []),
         prompt_boxes: deepClone(setRecord.prompt_boxes || [createPromptBox()]),
     };
+}
+
+function collectCommonCategoryNames(commonBoxes) {
+    const map = new Map();
+    for (const box of commonBoxes || []) {
+        const label = String(box?.label || "").trim();
+        const key = normalizeCategoryKey(label);
+        if (label && key && !map.has(key)) {
+            map.set(key, label);
+        }
+    }
+    return [...map.values()];
+}
+
+function formatDisabledCommonSummary(list) {
+    const clean = (Array.isArray(list) ? list : []).map((x) => String(x || "").trim()).filter(Boolean);
+    if (!clean.length) return "";
+    const head = clean.slice(0, 2).join(", ");
+    return clean.length > 2 ? `🚫共通: ${head} +${clean.length - 2}` : `🚫共通: ${head}`;
 }
 
 function collectCategoriesFromSets(selectedSets) {
@@ -299,6 +319,7 @@ export class AnimaSetStudioModal {
                         <div class="ass-section-title">呼び出したセット一覧（一時編集 OK）</div>
                         <div class="ass-toolbar-btns">
                             <button type="button" class="ass-btn-primary-sm" data-add-set>+ セットを呼び出す</button>
+                            <button type="button" class="ass-btn-xs" data-reorder-sets ${(this.state.selected_sets || []).length < 2 ? "disabled" : ""} title="呼び出し済みセットの順番をドラッグや ↑↓ でまとめて並び替え">⇅ 並び替え</button>
                             <button type="button" class="ass-btn-xs" data-clear-sets ${(this.state.selected_sets || []).length ? "" : "disabled"}>全クリア</button>
                         </div>
                     </div>
@@ -330,6 +351,7 @@ export class AnimaSetStudioModal {
         });
 
         // 2. Common Prompt Boxes
+        let lastCommonCatSig = collectCommonCategoryNames(this.state.common_prompt_boxes || []).join("|");
         renderPromptBoxesEditor(mainEl.querySelector("[data-common-prompts]"), {
             boxes: this.state.common_prompt_boxes || [],
             separator: this.state.common_separator ?? ", ",
@@ -338,6 +360,11 @@ export class AnimaSetStudioModal {
                 this.state.common_prompt_boxes = boxes;
                 this.state.common_separator = separator;
                 this.scheduleSaveState();
+                const nextSig = collectCommonCategoryNames(boxes).join("|");
+                if (nextSig !== lastCommonCatSig) {
+                    lastCommonCatSig = nextSig;
+                    renderSelectedSets();
+                }
             },
             onNotify: (msg, sev) => this.notify(msg, sev),
         });
@@ -456,6 +483,8 @@ export class AnimaSetStudioModal {
             const selected = this.state.selected_sets || [];
             const clearBtn = mainEl.querySelector("[data-clear-sets]");
             if (clearBtn) clearBtn.disabled = selected.length === 0;
+            const reorderBtn = mainEl.querySelector("[data-reorder-sets]");
+            if (reorderBtn) reorderBtn.disabled = selected.length < 2;
 
             if (!selected.length) {
                 listHost.innerHTML = `
@@ -490,6 +519,7 @@ export class AnimaSetStudioModal {
                     defaultImagesPerSet: this.state.settings?.images_per_set || 1,
                     baseResolution: normalizeBaseResolution(this.state.settings?.base_resolution ?? DEFAULT_BASE_RESOLUTION),
                     defaultAspectRatio: normalizeAspectRatio(this.state.settings?.default_aspect_ratio, false) || DEFAULT_ASPECT_RATIO,
+                    commonCategories: collectCommonCategoryNames(this.state.common_prompt_boxes || []),
                     excludedCategories: this.state.excluded_categories || [],
                     availableLoras: this.options.loras || [],
                     collapsed: this.collapsedCards.has(item.instance_id),
@@ -506,10 +536,42 @@ export class AnimaSetStudioModal {
                     onMove: (fromIdx, delta) => {
                         const toIdx = fromIdx + delta;
                         if (toIdx < 0 || toIdx >= selected.length) return;
+                        const beforeCard = listHost.children[fromIdx] || null;
+                        const beforeTop = beforeCard ? beforeCard.getBoundingClientRect().top : null;
+                        const scrollHost =
+                            [mainEl.querySelector(".ass-pane-sets"), mainEl, listHost.parentElement].find(
+                                (el) => el && el.scrollHeight > el.clientHeight + 2,
+                            ) || mainEl.querySelector(".ass-pane-sets");
+
                         const [moved] = selected.splice(fromIdx, 1);
                         selected.splice(toIdx, 0, moved);
                         this.scheduleSaveState();
                         renderSelectedSets();
+
+                        const afterCard = listHost.children[toIdx] || null;
+                        if (afterCard) {
+                            if (scrollHost && beforeTop !== null) {
+                                const afterTop = afterCard.getBoundingClientRect().top;
+                                scrollHost.scrollTop += Math.round(afterTop - beforeTop);
+                            }
+                            const hostRect = scrollHost?.getBoundingClientRect();
+                            const cardRect = afterCard.getBoundingClientRect();
+                            if (
+                                !hostRect ||
+                                cardRect.top < hostRect.top ||
+                                cardRect.top > hostRect.bottom - 48
+                            ) {
+                                afterCard.scrollIntoView({ block: "nearest" });
+                            }
+                            const sameDirBtn = afterCard.querySelector(
+                                delta < 0 ? "[data-move-up]" : "[data-move-down]",
+                            );
+                            if (sameDirBtn && !sameDirBtn.disabled) {
+                                sameDirBtn.focus({ preventScroll: true });
+                            }
+                            afterCard.classList.add("is-just-moved");
+                            setTimeout(() => afterCard.classList.remove("is-just-moved"), 520);
+                        }
                     },
                     onRemove: (removeIdx) => {
                         selected.splice(removeIdx, 1);
@@ -526,6 +588,7 @@ export class AnimaSetStudioModal {
                                 name: targetItem.name,
                                 thumbnail: targetItem.thumbnail || "",
                                 aspect_ratio: targetItem.aspect_ratio || "",
+                                disabled_common_categories: targetItem.disabled_common_categories || [],
                                 separator: targetItem.separator,
                                 loras: targetItem.loras,
                                 prompt_boxes: targetItem.prompt_boxes,
@@ -544,6 +607,7 @@ export class AnimaSetStudioModal {
                                 name: newName.trim(),
                                 thumbnail: targetItem.thumbnail || "",
                                 aspect_ratio: targetItem.aspect_ratio || "",
+                                disabled_common_categories: targetItem.disabled_common_categories || [],
                                 separator: targetItem.separator,
                                 loras: targetItem.loras,
                                 prompt_boxes: targetItem.prompt_boxes,
@@ -572,6 +636,12 @@ export class AnimaSetStudioModal {
             });
         };
 
+        mainEl.querySelector("[data-reorder-sets]").onclick = () => {
+            this.openSetReorderModal(() => {
+                renderSelectedSets();
+            });
+        };
+
         mainEl.querySelector("[data-clear-sets]").onclick = () => {
             if (!confirm("呼び出し済みのセットをすべてクリアしますか？（保存済みの元セットは消えません）")) return;
             this.state.selected_sets = [];
@@ -584,6 +654,197 @@ export class AnimaSetStudioModal {
 
         renderExcludeChips();
         renderSelectedSets();
+    }
+
+    openSetReorderModal(onApplied) {
+        const current = this.state?.selected_sets || [];
+        if (current.length < 2) {
+            this.notify("並び替えるには2件以上のセットを呼び出してください", "info");
+            return;
+        }
+        const existing = document.getElementById("ass-set-reorder-modal");
+        if (existing) existing.remove();
+
+        const initialOrder = [...current];
+        let draftOrder = [...current];
+        const baseRes = normalizeBaseResolution(this.state?.settings?.base_resolution ?? DEFAULT_BASE_RESOLUTION);
+        const defRatio = normalizeAspectRatio(this.state?.settings?.default_aspect_ratio, false) || DEFAULT_ASPECT_RATIO;
+        const defaultCount = Number(this.state?.settings?.images_per_set) || 1;
+
+        const overlay = document.createElement("div");
+        overlay.id = "ass-set-reorder-modal";
+        overlay.className = "ass-submodal-overlay";
+        overlay.innerHTML = `
+            <div class="ass-submodal ass-submodal-reorder">
+                <div class="ass-submodal-header">
+                    <h3>⇅ 呼び出したセットの並び替え（全 ${draftOrder.length} 件）</h3>
+                    <button type="button" class="ass-icon-btn" data-close title="閉じる">✕</button>
+                </div>
+                <div class="ass-submodal-body">
+                    <div class="ass-reorder-toolbar">
+                        <span class="ass-hint">行をドラッグ＆ドロップ、または右の ⤒ ↑ ↓ ⤓ ボタンで生成順を変更できます。</span>
+                        <div class="ass-toolbar-btns">
+                            <button type="button" class="ass-btn-xs" data-reverse title="順番を上下反転">↕ 逆順</button>
+                            <button type="button" class="ass-btn-xs" data-reset title="開く前の順番に戻す">↺ 元に戻す</button>
+                        </div>
+                    </div>
+                    <div class="ass-reorder-list" data-reorder-list></div>
+                </div>
+                <div class="ass-submodal-footer">
+                    <span class="ass-muted">上から順にキュー投入されます</span>
+                    <div class="ass-toolbar-btns">
+                        <button type="button" class="ass-btn-secondary" data-close>キャンセル</button>
+                        <button type="button" class="ass-btn-primary" data-apply>✓ この順番を適用</button>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        const listEl = overlay.querySelector("[data-reorder-list]");
+        let dragIdx = null;
+
+        const clearDropMarks = () => {
+            listEl.querySelectorAll(".ass-reorder-item").forEach((el) => {
+                el.classList.remove("is-dragging", "is-drop-before", "is-drop-after");
+            });
+        };
+
+        const moveItem = (fromIdx, toIdx, { followScroll = false } = {}) => {
+            if (fromIdx === toIdx || fromIdx < 0 || fromIdx >= draftOrder.length) return;
+            const boundedTo = Math.max(0, Math.min(draftOrder.length - 1, toIdx));
+            const beforeRow = followScroll ? listEl.children[fromIdx] || null : null;
+            const beforeTop = beforeRow ? beforeRow.getBoundingClientRect().top : null;
+            const [moved] = draftOrder.splice(fromIdx, 1);
+            draftOrder.splice(boundedTo, 0, moved);
+            renderList();
+            if (followScroll) {
+                const afterRow = listEl.children[boundedTo] || null;
+                if (afterRow) {
+                    if (beforeTop !== null) {
+                        const afterTop = afterRow.getBoundingClientRect().top;
+                        listEl.scrollTop += Math.round(afterTop - beforeTop);
+                    }
+                    afterRow.scrollIntoView({ block: "nearest" });
+                }
+            }
+        };
+
+        const renderList = () => {
+            listEl.innerHTML = "";
+            draftOrder.forEach((item, idx) => {
+                const thumbUrl = getSetThumbnailUrl(item.thumbnail);
+                const enabled = item.enabled !== false;
+                const count = Number(item.images_count) > 0 ? Number(item.images_count) : defaultCount;
+                const loraCount = (item.loras || []).filter((l) => l.enabled !== false).length;
+                const ratioBadge = formatSetResolutionBadge(baseRes, item.aspect_ratio, defRatio);
+
+                const row = document.createElement("div");
+                row.className = `ass-reorder-item ${enabled ? "" : "is-muted"}`;
+                row.draggable = true;
+                row.dataset.index = String(idx);
+                row.innerHTML = `
+                    <span class="ass-reorder-handle" title="ドラッグして移動">⋮⋮</span>
+                    <span class="ass-reorder-index">#${idx + 1}</span>
+                    <div class="ass-set-thumb-box ass-set-thumb-reorder ${thumbUrl ? "has-image" : ""}">
+                        ${thumbUrl ? `<img src="${escapeHtml(thumbUrl)}" alt="" loading="lazy" />` : `<span>🖼️</span>`}
+                    </div>
+                    <div class="ass-reorder-info">
+                        <div class="ass-reorder-name">
+                            <strong>${escapeHtml(item.name || "無題セット")}</strong>
+                            ${enabled ? "" : '<span class="ass-badge-common-off">OFF</span>'}
+                        </div>
+                        <div class="ass-reorder-meta">
+                            <span class="ass-badge-ratio">${escapeHtml(ratioBadge)}</span>
+                            <span class="ass-badge-soft">LoRA ${loraCount}</span>
+                            <span class="ass-badge-soft">${count}枚</span>
+                        </div>
+                    </div>
+                    <div class="ass-reorder-btns">
+                        <button type="button" class="ass-btn-xs" data-top ${idx === 0 ? "disabled" : ""} title="先頭へ">⤒</button>
+                        <button type="button" class="ass-btn-xs" data-up ${idx === 0 ? "disabled" : ""} title="1つ上へ">↑</button>
+                        <button type="button" class="ass-btn-xs" data-down ${idx === draftOrder.length - 1 ? "disabled" : ""} title="1つ下へ">↓</button>
+                        <button type="button" class="ass-btn-xs" data-bottom ${idx === draftOrder.length - 1 ? "disabled" : ""} title="末尾へ">⤓</button>
+                    </div>
+                `;
+
+                row.querySelector("[data-top]").onclick = (e) => {
+                    e.stopPropagation();
+                    moveItem(idx, 0, { followScroll: true });
+                };
+                row.querySelector("[data-up]").onclick = (e) => {
+                    e.stopPropagation();
+                    moveItem(idx, idx - 1, { followScroll: true });
+                };
+                row.querySelector("[data-down]").onclick = (e) => {
+                    e.stopPropagation();
+                    moveItem(idx, idx + 1, { followScroll: true });
+                };
+                row.querySelector("[data-bottom]").onclick = (e) => {
+                    e.stopPropagation();
+                    moveItem(idx, draftOrder.length - 1, { followScroll: true });
+                };
+
+                row.addEventListener("dragstart", (e) => {
+                    dragIdx = idx;
+                    row.classList.add("is-dragging");
+                    e.dataTransfer.effectAllowed = "move";
+                    e.dataTransfer.setData("text/plain", String(idx));
+                });
+                row.addEventListener("dragover", (e) => {
+                    if (dragIdx === null || dragIdx === idx) return;
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = "move";
+                    const rect = row.getBoundingClientRect();
+                    const isBefore = e.clientY < rect.top + rect.height / 2;
+                    listEl.querySelectorAll(".ass-reorder-item").forEach((el) => {
+                        el.classList.remove("is-drop-before", "is-drop-after");
+                    });
+                    row.classList.add(isBefore ? "is-drop-before" : "is-drop-after");
+                });
+                row.addEventListener("drop", (e) => {
+                    if (dragIdx === null) return;
+                    e.preventDefault();
+                    const rect = row.getBoundingClientRect();
+                    const isBefore = e.clientY < rect.top + rect.height / 2;
+                    let targetIdx = isBefore ? idx : idx + 1;
+                    if (dragIdx < targetIdx) targetIdx -= 1;
+                    const from = dragIdx;
+                    dragIdx = null;
+                    clearDropMarks();
+                    if (from !== targetIdx) {
+                        moveItem(from, targetIdx);
+                    }
+                });
+                row.addEventListener("dragend", () => {
+                    dragIdx = null;
+                    clearDropMarks();
+                });
+
+                listEl.appendChild(row);
+            });
+        };
+
+        overlay.querySelector("[data-reverse]").onclick = () => {
+            draftOrder.reverse();
+            renderList();
+        };
+        overlay.querySelector("[data-reset]").onclick = () => {
+            draftOrder = [...initialOrder];
+            renderList();
+        };
+        overlay.querySelector("[data-apply]").onclick = () => {
+            this.state.selected_sets = [...draftOrder];
+            this.scheduleSaveState();
+            overlay.remove();
+            onApplied();
+            this.notify("セットの並び順を更新しました", "success");
+        };
+
+        const close = () => overlay.remove();
+        overlay.querySelectorAll("[data-close]").forEach((btn) => (btn.onclick = close));
+
+        renderList();
+        document.body.appendChild(overlay);
     }
 
     openSetPickerModal(onAdded) {
@@ -664,6 +925,7 @@ export class AnimaSetStudioModal {
                                 <strong>${escapeHtml(setItem.name)}</strong>
                                 <span class="ass-badge-group">
                                     ${setItem.aspect_ratio ? `<span class="ass-badge-ratio">📐 ${escapeHtml(setItem.aspect_ratio)}</span>` : ""}
+                                    ${formatDisabledCommonSummary(setItem.disabled_common_categories) ? `<span class="ass-badge-common-off">${escapeHtml(formatDisabledCommonSummary(setItem.disabled_common_categories))}</span>` : ""}
                                     <span class="ass-badge-soft">LoRA ${loraCount}</span>
                                 </span>
                             </div>
@@ -787,6 +1049,7 @@ export class AnimaSetStudioModal {
             name: "",
             thumbnail: "",
             aspect_ratio: "",
+            disabled_common_categories: [],
             separator: ", ",
             loras: [],
             prompt_boxes: withTemplate
@@ -866,6 +1129,7 @@ export class AnimaSetStudioModal {
                     name: imported.suggested_name || "画像から読込セット",
                     thumbnail: autoThumb?.thumbnail || "",
                     aspect_ratio: detectedRatio,
+                    disabled_common_categories: [],
                     separator,
                     loras,
                     prompt_boxes: boxes,
@@ -1035,6 +1299,20 @@ export class AnimaSetStudioModal {
                             </div>
                         </div>
                     ` : ""}
+
+                    <div class="ass-common-off-panel">
+                        <div class="ass-common-off-header">
+                            <span class="ass-section-title">このセットで無効にする共通プロンプトのカテゴリ</span>
+                            <span class="ass-hint-inline">選択したカテゴリは、このセットを生成する時だけ「共通プロンプト」から除外されます（セット自身のプロンプトやイラスト集側の除外設定とは独立）</span>
+                        </div>
+                        <div class="ass-common-off-body">
+                            <div class="ass-common-off-chips" data-edit-common-off-chips></div>
+                            <div class="ass-common-off-add">
+                                <input type="text" class="ass-input ass-common-off-input" data-edit-common-off-input placeholder="任意のカテゴリ名を追加..." />
+                                <button type="button" class="ass-btn-xs" data-edit-common-off-add>+ 追加</button>
+                            </div>
+                        </div>
+                    </div>
 
                     <div class="ass-editor-grid">
                         <div class="ass-section-block">
@@ -1263,6 +1541,88 @@ export class AnimaSetStudioModal {
             inp.addEventListener("keydown", (e) => e.stopPropagation());
         }
 
+        // Disabled common prompt categories editor for this set
+        if (!Array.isArray(this.editingSet.disabled_common_categories)) {
+            this.editingSet.disabled_common_categories = [];
+        }
+        const editCommonOffHost = mainEl.querySelector("[data-edit-common-off-chips]");
+        const editCommonOffInput = mainEl.querySelector("[data-edit-common-off-input]");
+        const editCommonOffAddBtn = mainEl.querySelector("[data-edit-common-off-add]");
+
+        const renderEditCommonOffChips = () => {
+            const selectedKeys = new Set(
+                (this.editingSet.disabled_common_categories || []).map(normalizeCategoryKey),
+            );
+            const candidates = [];
+            const seen = new Set();
+            const addCandidate = (raw) => {
+                const clean = String(raw || "").trim();
+                const key = normalizeCategoryKey(clean);
+                if (clean && key && !seen.has(key)) {
+                    seen.add(key);
+                    candidates.push(clean);
+                }
+            };
+            // Common prompt categories first, then already-selected, then standard & set categories
+            for (const c of collectCommonCategoryNames(this.state?.common_prompt_boxes || [])) addCandidate(c);
+            for (const c of this.editingSet.disabled_common_categories || []) addCandidate(c);
+            for (const c of ["品質", "画師", "キャラ", "体格", "衣装", "ポーズ", "背景"]) addCandidate(c);
+            for (const b of this.editingSet.prompt_boxes || []) addCandidate(b?.label);
+
+            editCommonOffHost.innerHTML = "";
+            for (const cat of candidates) {
+                const key = normalizeCategoryKey(cat);
+                const isOff = selectedKeys.has(key);
+                const btn = document.createElement("button");
+                btn.type = "button";
+                btn.className = `ass-common-off-chip ${isOff ? "is-off" : ""}`;
+                btn.innerHTML = `<span>${isOff ? "🚫" : "✓"}</span><span>${escapeHtml(cat)}</span>`;
+                btn.title = isOff
+                    ? `共通プロンプトの「${cat}」はこのセットでは無効です（クリックで解除）`
+                    : `クリックするとこのセットでのみ共通プロンプトの「${cat}」を無効にします`;
+                btn.onclick = () => {
+                    if (isOff) {
+                        this.editingSet.disabled_common_categories =
+                            (this.editingSet.disabled_common_categories || []).filter(
+                                (c) => normalizeCategoryKey(c) !== key,
+                            );
+                    } else {
+                        this.editingSet.disabled_common_categories = [
+                            ...(this.editingSet.disabled_common_categories || []),
+                            cat,
+                        ];
+                    }
+                    renderEditCommonOffChips();
+                };
+                editCommonOffHost.appendChild(btn);
+            }
+        };
+
+        const addCustomDisabledCommonCategory = () => {
+            const label = String(editCommonOffInput.value || "").trim();
+            const key = normalizeCategoryKey(label);
+            if (!label || !key) return;
+            const existing = new Set((this.editingSet.disabled_common_categories || []).map(normalizeCategoryKey));
+            if (!existing.has(key)) {
+                this.editingSet.disabled_common_categories = [
+                    ...(this.editingSet.disabled_common_categories || []),
+                    label,
+                ];
+            }
+            editCommonOffInput.value = "";
+            renderEditCommonOffChips();
+        };
+
+        editCommonOffAddBtn.onclick = addCustomDisabledCommonCategory;
+        editCommonOffInput.addEventListener("keydown", (e) => {
+            e.stopPropagation();
+            if (e.key === "Enter") {
+                e.preventDefault();
+                addCustomDisabledCommonCategory();
+            }
+        });
+        renderEditCommonOffChips();
+
         mainEl.querySelector("[data-save-set]").onclick = async () => {
             const trimmed = String(this.editingSet.name || "").trim();
             if (!trimmed) {
@@ -1276,17 +1636,19 @@ export class AnimaSetStudioModal {
                     name: trimmed,
                     thumbnail: this.editingSet.thumbnail || "",
                     aspect_ratio: this.editingSet.aspect_ratio || "",
+                    disabled_common_categories: this.editingSet.disabled_common_categories || [],
                     separator: this.editingSet.separator ?? ", ",
                     loras: this.editingSet.loras || [],
                     prompt_boxes: this.editingSet.prompt_boxes || [],
                 });
                 this.editingSet = deepClone(saved);
-                // Keep thumbnails & aspect_ratio in sync for any already-called instances of this set
+                // Keep thumbnails, aspect_ratio & disabled_common_categories in sync for matching called instances
                 let syncedInstances = false;
                 for (const inst of this.state?.selected_sets || []) {
                     if (inst.source_set_id === saved.id) {
                         inst.thumbnail = saved.thumbnail || "";
                         inst.aspect_ratio = saved.aspect_ratio || "";
+                        inst.disabled_common_categories = deepClone(saved.disabled_common_categories || []);
                         syncedInstances = true;
                     }
                 }
@@ -1352,6 +1714,7 @@ export class AnimaSetStudioModal {
                                     <strong>${escapeHtml(setItem.name)}</strong>
                                     <span class="ass-badge-group">
                                         ${setItem.aspect_ratio ? `<span class="ass-badge-ratio">📐 ${escapeHtml(setItem.aspect_ratio)}</span>` : ""}
+                                        ${formatDisabledCommonSummary(setItem.disabled_common_categories) ? `<span class="ass-badge-common-off">${escapeHtml(formatDisabledCommonSummary(setItem.disabled_common_categories))}</span>` : ""}
                                         <span class="ass-badge-soft">LoRA ${loraCount}</span>
                                     </span>
                                 </div>

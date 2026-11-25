@@ -188,10 +188,18 @@ class TestSetStorage(unittest.TestCase):
         self.assertEqual(detect_aspect_ratio_from_size(1344, 768), "16:9")
         self.assertEqual(detect_aspect_ratio_from_size(1024, 1024), "1:1")
 
-        saved_set = self.storage.save_set({"name": "横長セット", "aspect_ratio": "16:9"})
+        saved_set = self.storage.save_set(
+            {
+                "name": "横長セット",
+                "aspect_ratio": "16:9",
+                "disabled_common_categories": ["背景", " 背景 ", "画師"],
+            }
+        )
         self.assertEqual(saved_set["aspect_ratio"], "16:9")
+        self.assertEqual(saved_set["disabled_common_categories"], ["背景", "画師"])
         reloaded_set = self.storage.get_set(saved_set["id"])
         self.assertEqual(reloaded_set["aspect_ratio"], "16:9")
+        self.assertEqual(reloaded_set["disabled_common_categories"], ["背景", "画師"])
 
         saved_state = self.storage.save_state(
             {
@@ -201,6 +209,7 @@ class TestSetStorage(unittest.TestCase):
                         "instance_id": "inst_r1",
                         "name": "横長セット",
                         "aspect_ratio": "16:9",
+                        "disabled_common_categories": ["背景"],
                         "prompt_boxes": [{"id": "b1", "label": "背景", "text": "sky", "disabled": False}],
                     }
                 ],
@@ -209,6 +218,7 @@ class TestSetStorage(unittest.TestCase):
         self.assertEqual(saved_state["settings"]["base_resolution"], 1216)
         self.assertEqual(saved_state["settings"]["default_aspect_ratio"], "3:4")
         self.assertEqual(saved_state["selected_sets"][0]["aspect_ratio"], "16:9")
+        self.assertEqual(saved_state["selected_sets"][0]["disabled_common_categories"], ["背景"])
 
 
 if __name__ == "__main__":
