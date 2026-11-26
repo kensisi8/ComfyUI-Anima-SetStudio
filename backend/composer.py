@@ -376,6 +376,271 @@ def build_single_workflow_prompt(
     return prompt
 
 
+def build_single_workflow_ui_graph(
+    *,
+    combined_boxes: list[dict[str, Any]],
+    merged_loras: list[dict[str, Any]],
+    negative_prompt: str,
+    settings: dict[str, Any],
+    seed: int,
+    separator: str = ", ",
+    set_name: str = "",
+    use_anima_tools: bool = True,
+    now: datetime | None = None,
+    width: int | None = None,
+    height: int | None = None,
+) -> dict[str, Any]:
+    """Build a ComfyUI UI `workflow` JSON graph for PNG metadata (`extra_pnginfo.workflow`).
+
+    Embedding this alongside the API `prompt` ensures dragging generated PNGs back onto
+    ComfyUI calls `onConfigure()` on AnimaMultiLoraLoader and AnimaPromptPlusClipEncode,
+    so LoRAs and categorized prompt boxes display cleanly on canvas.
+    """
+    cfg = normalize_settings(settings)
+    job_w = int(width) if width is not None else int(cfg["width"])
+    job_h = int(height) if height is not None else int(cfg["height"])
+    filename_prefix = resolve_filename_prefix(cfg["filename_prefix"], set_name, now=now)
+    sep = separator if separator is not None else ", "
+
+    nodes: list[dict[str, Any]] = []
+    nodes_by_id: dict[int, dict[str, Any]] = {}
+    links: list[list[Any]] = []
+    next_link_id = 1
+    next_order = 0
+
+    def _add_node(
+        node_id: int,
+        node_type: str,
+        pos: list[int],
+        size: list[int],
+        *,
+        inputs: list[tuple[str, str]] | None = None,
+        outputs: list[tuple[str, str]] | None = None,
+        widgets_values: list[Any] | None = None,
+        widgets_values_named: dict[str, Any] | None = None,
+        title: str | None = None,
+    ) -> dict[str, Any]:
+        nonlocal next_order
+        node: dict[str, Any] = {
+            "id": node_id,
+            "type": node_type,
+            "pos": pos,
+            "size": size,
+            "flags": {},
+            "order": next_order,
+            "mode": 0,
+            "inputs": [{"name": n, "type": t, "link": None} for (n, t) in (inputs or [])],
+            "outputs": [
+                {"name": n, "type": t, "links": [], "slot_index": idx}
+                for idx, (n, t) in enumerate(outputs or [])
+            ],
+            "properties": {"Node name for S&R": node_type},
+            "widgets_values": list(widgets_values or []),
+        }
+        if widgets_values_named:
+            node["widgets_values_named"] = dict(widgets_values_named)
+        if title:
+            node["title"] = title
+        next_order += 1
+        nodes.append(node)
+        nodes_by_id[node_id] = node
+        return node
+
+    def _connect(origin_id: int, origin_slot: int, target_id: int, target_slot: int, link_type: str) -> None:
+        nonlocal next_link_id
+        lid = next_link_id
+        next_link_id += 1
+        links.append([lid, origin_id, origin_slot, target_id, target_slot, link_type])
+        nodes_by_id[origin_id]["outputs"][origin_slot]["links"].append(lid)
+        nodes_by_id[target_id]["inputs"][target_slot]["link"] = lid
+
+    # Loaders (Column 1)
+    _add_node(
+        1,
+        "UNETLoader",
+        [40, 40],
+        [320, 82],
+        outputs=[("MODEL", "MODEL")],
+        widgets_values=[cfg["unet_name"], cfg["weight_dtype"]],
+    )
+    _add_node(
+        2,
+        "CLIPLoader",
+        [40, 180],
+        [320, 106],
+        outputs=[("CLIP", "CLIP")],
+        widgets_values=[cfg["clip_name"], cfg["clip_type"], cfg["clip_device"]],
+    )
+    _add_node(
+        3,
+        "VAELoader",
+        [40, 350],
+        [320, 58],
+        outputs=[("VAE", "VAE")],
+        widgets_values=[cfg["vae_name"]],
+    )
+
+    # LoRA Loader chain (Column 2 top)
+    model_origin_id = 1
+    lora_end_x = 420
+    if merged_loras:
+        if use_anima_tools:
+            lora_json = json.dumps(merged_loras, ensure_ascii=False)
+            _add_node(
+                4,
+                "AnimaMultiLoraLoader",
+                [420, 40],
+                [360, max(160, 100 + len(merged_loras) * 64)],
+                inputs=[("model", "MODEL")],
+                outputs=[("MODEL", "MODEL")],
+                widgets_values=[lora_json],
+                widgets_values_named={"lora_list_json": lora_json},
+            )
+            _connect(model_origin_id, 0, 4, 0, "MODEL")
+            model_origin_id = 4
+            lora_end_x = 820
+        else:
+            for idx, entry in enumerate(merged_loras):
+                lid = 100 + idx
+                _add_node(
+                    lid,
+                    "LoraLoaderModelOnly",
+                    [420 + idx * 300, 40],
+                    [270, 82],
+                    inputs=[("model", "MODEL")],
+                    outputs=[("MODEL", "MODEL")],
+                    widgets_values=[entry["name"], float(entry["strength_model"])],
+                )
+                _connect(model_origin_id, 0, lid, 0, "MODEL")
+                model_origin_id = lid
+            lora_end_x = 420 + len(merged_loras) * 300
+
+    # ModelSamplingAuraFlow
+    _add_node(
+        5,
+        "ModelSamplingAuraFlow",
+        [lora_end_x, 40],
+        [270, 58],
+        inputs=[("model", "MODEL")],
+        outputs=[("MODEL", "MODEL")],
+        widgets_values=[float(cfg["shift"])],
+    )
+    _connect(model_origin_id, 0, 5, 0, "MODEL")
+
+    # Positive Prompt
+    if use_anima_tools:
+        boxes_for_node = combined_boxes if combined_boxes else [{"id": "empty", "text": "", "disabled": False}]
+        boxes_json = json.dumps(boxes_for_node, ensure_ascii=False)
+        _add_node(
+            6,
+            "AnimaPromptPlusClipEncode",
+            [420, 260],
+            [440, max(240, 120 + len(boxes_for_node) * 86)],
+            inputs=[("clip", "CLIP")],
+            outputs=[("positive", "CONDITIONING"), ("text", "STRING")],
+            widgets_values=[boxes_json, sep],
+            widgets_values_named={"prompt_boxes": boxes_json, "separator": sep},
+        )
+    else:
+        _add_node(
+            6,
+            "CLIPTextEncode",
+            [420, 260],
+            [420, 160],
+            inputs=[("clip", "CLIP")],
+            outputs=[("CONDITIONING", "CONDITIONING")],
+            widgets_values=[join_prompt_boxes_text(combined_boxes, sep)],
+            title="CLIP Text Encode (Positive)",
+        )
+    _connect(2, 0, 6, 0, "CLIP")
+
+    # Negative Prompt
+    _add_node(
+        7,
+        "CLIPTextEncode",
+        [420, 560],
+        [420, 130],
+        inputs=[("clip", "CLIP")],
+        outputs=[("CONDITIONING", "CONDITIONING")],
+        widgets_values=[str(negative_prompt or "")],
+        title="CLIP Text Encode (Negative)",
+    )
+    _connect(2, 0, 7, 0, "CLIP")
+
+    # Latent
+    _add_node(
+        8,
+        "EmptySD3LatentImage",
+        [420, 730],
+        [320, 106],
+        outputs=[("LATENT", "LATENT")],
+        widgets_values=[job_w, job_h, 1],
+    )
+
+    # KSampler / VAEDecode / SaveImage (Right columns)
+    sampler_x = max(lora_end_x + 320, 920)
+    control_after_gen = cfg.get("seed_mode") if cfg.get("seed_mode") in ("fixed", "increment", "decrement", "randomize") else "fixed"
+    _add_node(
+        9,
+        "KSampler",
+        [sampler_x, 180],
+        [320, 262],
+        inputs=[
+            ("model", "MODEL"),
+            ("positive", "CONDITIONING"),
+            ("negative", "CONDITIONING"),
+            ("latent_image", "LATENT"),
+        ],
+        outputs=[("LATENT", "LATENT")],
+        widgets_values=[
+            int(seed),
+            control_after_gen,
+            int(cfg["steps"]),
+            float(cfg["cfg"]),
+            cfg["sampler_name"],
+            cfg["scheduler"],
+            float(cfg["denoise"]),
+        ],
+    )
+    _connect(5, 0, 9, 0, "MODEL")
+    _connect(6, 0, 9, 1, "CONDITIONING")
+    _connect(7, 0, 9, 2, "CONDITIONING")
+    _connect(8, 0, 9, 3, "LATENT")
+
+    _add_node(
+        10,
+        "VAEDecode",
+        [sampler_x + 370, 180],
+        [210, 46],
+        inputs=[("samples", "LATENT"), ("vae", "VAE")],
+        outputs=[("IMAGE", "IMAGE")],
+    )
+    _connect(9, 0, 10, 0, "LATENT")
+    _connect(3, 0, 10, 1, "VAE")
+
+    _add_node(
+        11,
+        "SaveImage",
+        [sampler_x + 630, 180],
+        [320, 270],
+        inputs=[("images", "IMAGE")],
+        widgets_values=[filename_prefix],
+    )
+    _connect(10, 0, 11, 0, "IMAGE")
+
+    max_node_id = max(n["id"] for n in nodes) if nodes else 0
+    return {
+        "last_node_id": max_node_id,
+        "last_link_id": next_link_id - 1,
+        "nodes": nodes,
+        "links": links,
+        "groups": [],
+        "config": {},
+        "extra": {"ds": {"scale": 0.85, "offset": [40, 40]}},
+        "version": 0.4,
+    }
+
+
 def build_batch_jobs(
     payload: dict[str, Any],
     *,
@@ -473,6 +738,19 @@ def build_batch_jobs(
                 width=job_w,
                 height=job_h,
             )
+            workflow_ui = build_single_workflow_ui_graph(
+                combined_boxes=combined_boxes,
+                merged_loras=merged_loras,
+                negative_prompt=negative_prompt,
+                settings=job_settings,
+                seed=seed,
+                separator=separator,
+                set_name=set_name,
+                use_anima_tools=use_anima_tools,
+                now=batch_dt,
+                width=job_w,
+                height=job_h,
+            )
             jobs.append(
                 {
                     "set_index": set_idx,
@@ -488,12 +766,13 @@ def build_batch_jobs(
                     "merged_loras_count": len(merged_loras),
                     "prompt": workflow_prompt,
                     "extra_pnginfo": {
+                        "workflow": workflow_ui,
                         "anima_set_studio": {
                             "set_name": set_name,
                             "source_set_id": str(set_item.get("source_set_id") or ""),
                             "excluded_categories": excluded_categories,
                             "disabled_common_categories": disabled_common_categories,
-                        }
+                        },
                     },
                 }
             )

@@ -97,3 +97,7 @@
 
 - [x] **Task 15: イラスト集作成タブへの専用セット並び替えモーダル追加 (`js/views/studio_modal.js`, `js/styles.js`, `README.md`)**
   - ツールバーに **`⇅ 並び替え`** ボタンを追加し、サムネ付きコンパクト一覧でドラッグ＆ドロップ・`⤒ ↑ ↓ ⤓`・逆順・元に戻すで並び替え＆適用できる専用画面を実装。
+
+- [x] **Task 16: 生成画像への ComfyUI UI `workflow` メタデータ埋め込み＆Colab 起動高速化 (`backend/composer.py`, `../ComfyUI_Anima_Colab.ipynb`)**
+  - `build_single_workflow_ui_graph` を追加し、`extra_pnginfo["workflow"]` に完全な ComfyUI ワークフロー JSON（`AnimaMultiLoraLoader` の `widgets_values` / `widgets_values_named`、`AnimaPromptPlusClipEncode` のカテゴリ枠等）を埋め込むよう修正。
+  - Colab ノートブックの FUSE キャッシュ完全無効化を 15 秒 TTL キャッシュへ変更、`ComfyUI` の `--depth 1` 軽量クローン、依存パッケージの一括インストール（`uv` 優先＋スタンプで再実行スキップ）、旧プロセス自動整理＆経過時間ログを追加。

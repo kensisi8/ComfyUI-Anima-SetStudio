@@ -132,6 +132,27 @@ class TestComposer(unittest.TestCase):
         self.assertEqual(parsed_boxes[1]["random"], ["pose"])
         self.assertEqual(p0["11"]["inputs"]["filename_prefix"], "20261124/夏服_テスト")
 
+        # UI workflow metadata is embedded so dragging PNGs into ComfyUI restores LoRAs & Prompt Boxes
+        wf0 = jobs[0]["extra_pnginfo"]["workflow"]
+        self.assertEqual(wf0["version"], 0.4)
+        wf_nodes_by_type = {n["type"]: n for n in wf0["nodes"]}
+        self.assertIn("AnimaMultiLoraLoader", wf_nodes_by_type)
+        lora_node = wf_nodes_by_type["AnimaMultiLoraLoader"]
+        restored_loras = json.loads(lora_node["widgets_values_named"]["lora_list_json"])
+        self.assertEqual([l["name"] for l in restored_loras], ["char_sample.safetensors", "style_sample.safetensors"])
+        self.assertEqual(lora_node["widgets_values"][0], lora_node["widgets_values_named"]["lora_list_json"])
+        prompt_node = wf_nodes_by_type["AnimaPromptPlusClipEncode"]
+        self.assertEqual(len(json.loads(prompt_node["widgets_values"][0])), 2)
+        ks_node = wf_nodes_by_type["KSampler"]
+        self.assertEqual(ks_node["widgets_values"][0], 101)
+        self.assertEqual(ks_node["widgets_values"][2], 30)
+        self.assertEqual(ks_node["widgets_values"][3], 4.0)
+        # All workflow link endpoints exist and match node IDs
+        wf_node_ids = {n["id"] for n in wf0["nodes"]}
+        for link in wf0["links"]:
+            self.assertIn(link[1], wf_node_ids)
+            self.assertIn(link[3], wf_node_ids)
+
         # Fallback mode (without Comfyui-Anima-Tools)
         fallback_seeds = iter([301, 302, 401])
         fb_jobs = build_batch_jobs(payload, use_anima_tools=False, seed_fn=lambda: next(fallback_seeds), now=fixed_now)
